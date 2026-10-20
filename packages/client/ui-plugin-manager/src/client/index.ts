@@ -28,6 +28,7 @@ import { en, zh, type PluginManagerLocaleKey } from './locales.ts'
 import { PluginManagerController } from './manager-store.ts'
 import { createNavigationStore } from './navigation-store.ts'
 import type {} from './slot-contract.ts'
+import { tabLedgerSource } from './tab-ledger.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -51,6 +52,8 @@ export type {
   ConfigPageForm,
   PluginActivationOwnerProps,
   PluginAddActionsProps,
+  PluginTabInstall,
+  PluginTabProps,
   PluginConfigViewProps,
   PluginDetailProps,
   PluginPackageRef,
@@ -125,7 +128,7 @@ export function apply(ctx: ClientContext): void {
   // the page's own; a plugin's configuration arrives through the slots the
   // page declares here, so the page never names a configurable plugin.
   const configLedger = configLedgerSource(ctx)
-  const face = controller.inject(configLedger, text => ctx.locale.resolveText(text))
+  const face = controller.inject(configLedger, tabLedgerSource(ctx), text => ctx.locale.resolveText(text))
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register(
       {
@@ -153,6 +156,7 @@ export function apply(ctx: ClientContext): void {
         inject: () => face,
         children: {
           'plugins.add.actions': { kind: 'list', scope: 'root' },
+          'plugins.tab': { kind: 'list', scope: 'root' },
           'plugins.item': { kind: 'list', scope: 'root' },
           'plugins.bundle.activation': { kind: 'keyed', scope: 'root' },
           'plugins.bundle.config': { kind: 'keyed', scope: 'root' },
@@ -165,11 +169,13 @@ export function apply(ctx: ClientContext): void {
       PluginManagerPage,
     )
     yield ctx.layout.panelInfo.subscribe(() => {
-      if (ctx.layout.panelInfo.getSnapshot().activePanelId !== PANEL_ID) instance.actions.setView({ kind: 'list' })
+      if (ctx.layout.panelInfo.getSnapshot().activePanelId !== PANEL_ID)
+        instance.actions.setView({ kind: 'list' })
     })
     const disposeNavigation = ctx.reflect.provide('pluginNavigation', {
       openBundle: (packageName: string) => {
         ctx.layout.selectPanel(PANEL_ID)
+        instance.actions.setTab('installed')
         instance.actions.setView({ kind: 'package', name: packageName })
       },
     })

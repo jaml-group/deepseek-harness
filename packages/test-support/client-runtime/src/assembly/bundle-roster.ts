@@ -39,6 +39,7 @@ interface BundleLayer {
 
 /**
  * Compose the browser roster of `bundles`, applied in order.
+ * Bundle self-references use their loaded manifests; other rows use the bundles' dependency search paths.
  * @param bundles - bundle package names in application order.
  * @param anchor - file whose package resolution locates the bundles; default this package.
  * @param disabledContext - optional Loader evaluation scope for trusted `disabled` expressions.
@@ -52,31 +53,51 @@ export function bundleRoster(
   disabledContext?: object,
 ): ClientRoster {
   const layers = bundles.map(name => readLayer(name, anchor))
-  const entries = applyEntryPatches([], layers.flatMap(layer => layer.patches), (message: string, ...args: unknown[]) => {
-    throw new Error(`client-test-runtime: bundle patch ${describe(message, args)}`)
-  })
+  const entries = applyEntryPatches(
+    [],
+    layers.flatMap(layer => layer.patches),
+    (message: string, ...args: unknown[]) => {
+      throw new Error(`client-test-runtime: bundle patch ${describe(message, args)}`)
+    },
+  )
   const anchors = layers.map(layer => layer.manifestPath)
   const rows: ClientRosterRow[] = []
   const seen = new Set<string>()
   for (const { entry, disabled } of flattenGroups(entries)) {
     const name = exactPackageSpecifier(entry.name)
     if (name === undefined || disabled.includes(true) || seen.has(name)) continue
-    if (disabledContext !== undefined
-      && disabled.some(value => isJsExpr(value) && Boolean(evaluate(disabledContext, value.__jsExpr)))) continue
+    if (
+      disabledContext !== undefined &&
+      disabled.some(value => isJsExpr(value) && Boolean(evaluate(disabledContext, value.__jsExpr)))
+    )
+      continue
     seen.add(name)
-    const manifestPath = locateManifest(anchors, name)
+    // A linked bundle can name itself without a self-link in its dependency directory.
+    const manifestPath =
+      anchors.find(path => readManifest(path).name === name) ?? locateManifest(anchors, name)
     if (manifestPath === undefined) {
       throw new Error(`client-test-runtime: cannot resolve plugin package ${name} from ${bundles.join(', ')}`)
     }
     const manifest = readManifest(manifestPath)
     if (manifest.name !== name) {
-      throw new Error(`client-test-runtime: ${manifestPath} names ${JSON.stringify(manifest.name)}, expected ${name}`)
+      throw new Error(
+        `client-test-runtime: ${manifestPath} names ${JSON.stringify(manifest.name)}, expected ${name}`,
+      )
     }
     const declaration = parseDshClient(name, manifest.dsh?.client)
     if (declaration === undefined || declaration.platform !== 'web') continue
-    if (disabled.some(value => value !== undefined && value !== null && typeof value !== 'boolean'
-      && !(disabledContext !== undefined && isJsExpr(value)))) {
-      throw new Error(`client-test-runtime: browser row ${name} has a \`disabled\` value this reader cannot evaluate (a !!js expression)`)
+    if (
+      disabled.some(
+        value =>
+          value !== undefined &&
+          value !== null &&
+          typeof value !== 'boolean' &&
+          !(disabledContext !== undefined && isJsExpr(value)),
+      )
+    ) {
+      throw new Error(
+        `client-test-runtime: browser row ${name} has a \`disabled\` value this reader cannot evaluate (a !!js expression)`,
+      )
     }
     rows.push({ name, inject: declaration.inject ?? [], immediately: declaration.immediately === true })
   }
@@ -85,16 +106,20 @@ export function bundleRoster(
 
 function readLayer(bundle: string, anchor: string): BundleLayer {
   const manifestPath = locateManifest([anchor], bundle)
-  if (manifestPath === undefined) throw new Error(`client-test-runtime: cannot resolve bundle ${bundle} from ${anchor}`)
+  if (manifestPath === undefined)
+    throw new Error(`client-test-runtime: cannot resolve bundle ${bundle} from ${anchor}`)
   const declared = readManifest(manifestPath).dsh?.bundle?.patch
   const files = typeof declared === 'string' ? [declared] : declared
   if (!Array.isArray(files) || !files.every(file => typeof file === 'string')) {
-    throw new Error(`client-test-runtime: bundle ${bundle} declares no dsh.bundle.patch file list in ${manifestPath}`)
+    throw new Error(
+      `client-test-runtime: bundle ${bundle} declares no dsh.bundle.patch file list in ${manifestPath}`,
+    )
   }
   const patches = files.flatMap((patch) => {
     const file = join(dirname(manifestPath), patch)
     const parsed: unknown = yaml.load(readFileSync(file, 'utf8'), { schema: entryListSchema })
-    if (!Array.isArray(parsed)) throw new Error(`client-test-runtime: ${file} must be a top-level list of patches`)
+    if (!Array.isArray(parsed))
+      throw new Error(`client-test-runtime: ${file} must be a top-level list of patches`)
     return parsed as PatchOptions[]
   })
   return { manifestPath, patches }

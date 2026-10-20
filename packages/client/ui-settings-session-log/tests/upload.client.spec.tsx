@@ -20,7 +20,6 @@ function fixture(writable = true) {
     user: {},
     revision: 0,
     writable,
-    mode: 'host',
   })
   const set = vi.fn(async (_field: string, enabled: unknown) => {
     formState.update((state) => {

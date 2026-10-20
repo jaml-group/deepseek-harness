@@ -8,7 +8,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import type { SubagentDelivery } from './inbox.ts'
+import type { SubagentDelivery } from './control-types.ts'
 import type SubagentRuntime from './index.ts'
 
 /** Process-stable identity carried only by the standard adjacent-Agent messaging tool. */
@@ -30,8 +30,10 @@ export function markAdjacentAgentSendMessageTool(definition: ToolDefinition): To
  * @returns whether the definition carries the internal standard-tool identity.
  */
 export function isAdjacentAgentSendMessageTool(definition: ToolDefinition | undefined): boolean {
-  return definition !== undefined
-    && (definition as ToolDefinition & { [adjacentAgentSendMessageTool]?: true })[adjacentAgentSendMessageTool] === true
+  return (
+    definition !== undefined &&
+    (definition as ToolDefinition & { [adjacentAgentSendMessageTool]?: true })[adjacentAgentSendMessageTool] === true
+  )
 }
 
 /**

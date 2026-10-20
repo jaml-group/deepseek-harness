@@ -1,7 +1,7 @@
 /** Shared configuration forms and their Host describe mirror. */
 import type { Context } from '@deepseek-ai/cordis'
-// Type-only: the ctx.remote merge, the fixed Host facts, and the carrier's
-// `connection/reset` lifecycle event, all through the assembly package.
+// Type-only: the ctx.remote merge and the carrier's `connection/reset`
+// lifecycle event, all through the assembly package.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 // The allowlist and event declaration jointly type forwarded settings events.
 import type {} from '@deepseek-ai/dsh-api-remotes/types'
@@ -35,9 +35,9 @@ export const inject = ['remote', 'remote.settings']
  */
 export function apply(ctx: Context): void {
   const schema = new SettingsSchemaService(ctx)
-  // Every form uses the persistence mode resolved from the connected Host.
-  const persistence = ctx.remote.$host.isLoopback ? 'host' : 'memory'
-  const mirror = new SettingsDescribeMirror(ctx, persistence)
+  // Persistence policy: every authenticated browser persists through the Host document
+  // (.agents/notes/implemented/bug-fix/2026-09-15-authenticated-browser-host-preferences.md).
+  const mirror = new SettingsDescribeMirror(ctx)
   ctx.effect(() => {
     const disposers = [
       ctx.remote.$on('settings/document-updated', () => {
@@ -57,5 +57,5 @@ export function apply(ctx: Context): void {
       return mirror.dispose()
     }
   }, 'ui-settings: describe mirror invalidations')
-  new ConfigForms(ctx, { mirror, schema, persistence })
+  new ConfigForms(ctx, { mirror, schema })
 }

@@ -17,7 +17,15 @@ import { SettingsDescribeMirror, type SettingsDescribeView } from '../src/client
 
 const schema = JSON.parse(JSON.stringify(z.object({ field: z.string() }).toJSON())) as JsonValue
 function view(field = 'initial', revision = 1): SettingsNamespaceView {
-  return { ns: 'native-settings', value: { field }, schema, autoGenerate: true, applies: 'live', secrets: [], revision }
+  return {
+    ns: 'native-settings',
+    value: { field },
+    schema,
+    autoGenerate: true,
+    applies: 'live',
+    secrets: [],
+    revision,
+  }
 }
 function described(field = 'initial', revision = 1): RemoteResult<SettingsDescribeView> {
   return { ok: true, value: { writable: true, hasDocument: true, namespaces: [view(field, revision)] } }
@@ -25,21 +33,24 @@ function described(field = 'initial', revision = 1): RemoteResult<SettingsDescri
 function deferred<T>() {
   return Promise.withResolvers<T>()
 }
-function fixture(mode: 'host' | 'memory' = 'host', release = () => {}) {
+function fixture(release = () => {}) {
   const ctx = new Context()
   const describe = vi.fn<() => Promise<RemoteResult<SettingsDescribeView>>>().mockResolvedValue(described())
   const mutate = vi
     .fn<
-    (namespace: string, ops: SettingsPathOpView[], revision?: number) => Promise<RemoteResult<SettingsNamespaceView>>
+    (
+      namespace: string,
+      ops: SettingsPathOpView[],
+      revision?: number,
+    ) => Promise<RemoteResult<SettingsNamespaceView>>
   >()
     .mockResolvedValue({ ok: true, value: view('changed', 2) })
   new TestRemote(ctx, { settings: { describe, mutate } })
-  const mirror = new SettingsDescribeMirror(ctx, mode)
+  const mirror = new SettingsDescribeMirror(ctx)
   const form = new ConfigFormController<{ field: string }>(
     ctx,
     { namespace: 'native-settings' },
     mirror,
-    mode,
     new SettingsSchemaService(ctx),
   )
   onTestFinished(async () => {
@@ -63,7 +74,11 @@ it('returns the original accepted mutation answer and keeps boolean writes compa
 })
 
 it.each([
-  new RemoteError('settings/conflict', 'changed elsewhere', { ns: 'native-settings', expected: 1, actual: 4 }),
+  new RemoteError('settings/conflict', 'changed elsewhere', {
+    ns: 'native-settings',
+    expected: 1,
+    actual: 4,
+  }),
   new RemoteError('settings/rejected', 'Host validation refused the field', { ns: 'native-settings' }),
   new RemoteError('gateway/internal', 'connection lost', {}),
 ])(
@@ -102,7 +117,7 @@ it('returns the original refusal even when its recovery read fails', async () =>
 
 it('shares ordering and revision chaining between detailed and boolean mutations', async () => {
   const first = deferred<RemoteResult<SettingsNamespaceView>>()
-  const { mirror, form, mutate } = fixture('host', () => {
+  const { mirror, form, mutate } = fixture(() => {
     first.resolve({ ok: true, value: view('one', 2) })
   })
   await mirror.ensure()
@@ -119,9 +134,9 @@ it('shares ordering and revision chaining between detailed and boolean mutations
   expect(form.getSnapshot()).toMatchObject({ value: { field: 'two' }, revision: 3 })
 })
 
-it.each(['host', 'memory'] as const)('reports local %s skips without a Host write', async (mode) => {
-  const { form, mutate } = fixture(mode)
-  if (mode === 'host') await form.dispose()
+it('reports disposed skips without a Host write', async () => {
+  const { form, mutate } = fixture()
+  await form.dispose()
   expect(await form.mutateResult([])).toBeUndefined()
   expect(await form.mutate([])).toBe(false)
   expect(mutate).not.toHaveBeenCalled()
@@ -130,7 +145,7 @@ it.each(['host', 'memory'] as const)('reports local %s skips without a Host writ
 it('drains a started detailed write, skips its queued successor and suppresses publication after form disposal', async () => {
   const first = deferred<RemoteResult<SettingsNamespaceView>>()
   const answer: RemoteResult<SettingsNamespaceView> = { ok: true, value: view('changed', 2) }
-  const { mirror, form, mutate } = fixture('host', () => {
+  const { mirror, form, mutate } = fixture(() => {
     first.resolve(answer)
   })
   await mirror.ensure()
@@ -155,7 +170,7 @@ it('drains a started detailed write, skips its queued successor and suppresses p
 
 it('refreshes a ready shared mirror and coalesces mid-flight refreshes into one rerun', async () => {
   const pending = deferred<RemoteResult<SettingsDescribeView>>()
-  const { mirror, describe } = fixture('host', () => {
+  const { mirror, describe } = fixture(() => {
     pending.resolve(described('second', 2))
   })
   await mirror.ensure()
@@ -187,7 +202,7 @@ it('disposes before a scheduled read starts and never resumes through the public
 
 it('waits for the shared initial answer before registering a served namespace', async () => {
   const { ctx, mirror, describe } = fixture()
-  const forms = new ConfigForms(ctx, { mirror, schema: ctx.settingsSchema, persistence: 'host' })
+  const forms = new ConfigForms(ctx, { mirror, schema: ctx.settingsSchema })
   const withdrawn = vi.fn()
   const register = vi.fn(() => withdrawn)
   const off = forms.whileServed(['native-settings'], register)
@@ -218,7 +233,7 @@ it.each(['success', 'failure', 'rejection'] as const)(
       outcome === 'success'
         ? described('late', 9)
         : { ok: false, error: new RemoteError('gateway/internal', 'offline', {}) }
-    const { mirror, describe } = fixture('host', () => {
+    const { mirror, describe } = fixture(() => {
       pending.resolve(answer)
     })
     await mirror.ensure()

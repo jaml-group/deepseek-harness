@@ -18,20 +18,25 @@ describe('webApp (the real web profile)', () => {
     const names = webApp.rows.map(row => row.name)
     expect(new Set(names).size).toBe(names.length)
     const known = new Set([...names, ...Object.keys(getStaticModules())])
-    const dangling = webApp.rows.flatMap(row => row.inject.filter(target => !known.has(target)).map(target => `${row.name} -> ${target}`))
+    const dangling = webApp.rows.flatMap(row =>
+      row.inject.filter(target => !known.has(target)).map(target => `${row.name} -> ${target}`),
+    )
     expect(dangling).toEqual([])
     expect(bundleRoster(WEB_PROFILE_BUNDLES, undefined, profileScope('web')).rows).toEqual(webApp.rows)
     expect(names).not.toContain('@deepseek-ai/dsh-client-ui-sidebar-browser')
-    expect(bundleRoster(WEB_PROFILE_BUNDLES, undefined, profileScope('desktop')).rows.map(row => row.name))
-      .toContain('@deepseek-ai/dsh-client-ui-sidebar-browser')
+    expect(
+      bundleRoster(WEB_PROFILE_BUNDLES, undefined, profileScope('desktop')).rows.map(row => row.name),
+    ).toContain('@deepseek-ai/dsh-client-ui-sidebar-browser')
   })
 
   it('keeps browser rows with their declarations and drops Host-only, disabled, and subpath rows', () => {
     const immediate = new Set(webApp.rows.filter(row => row.immediately).map(row => row.name))
     expect(immediate.has(MODULES_PACKAGE)).toBe(true)
     expect(immediate.has('@deepseek-ai/dsh-client-connection')).toBe(true)
-    expect(webApp.rows.find(row => row.name === '@deepseek-ai/dsh-api-gateway')?.inject)
-      .toEqual(['@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-client-connection'])
+    expect(webApp.rows.find(row => row.name === '@deepseek-ai/dsh-api-gateway')?.inject).toEqual([
+      '@deepseek-ai/dsh-typert-registry',
+      '@deepseek-ai/dsh-client-connection',
+    ])
     const names = webApp.rows.map(row => row.name)
     expect(names).toContain('@deepseek-ai/dsh-client-ui-settings-general')
     expect(names).not.toContain('@deepseek-ai/dsh-llm') // Host only
@@ -72,21 +77,59 @@ class Scratch {
 
 describe('bundleRoster on a scratch installation', () => {
   const scratch = new Scratch()
-  afterAll(() => { rmSync(scratch.root, { recursive: true, force: true }) })
+  afterAll(() => {
+    rmSync(scratch.root, { recursive: true, force: true })
+  })
 
   it('resolves a linked bundle dependency before an unrelated ancestor package', () => {
     const linked = new Scratch()
-    onTestFinished(() => { rmSync(linked.root, { recursive: true, force: true }) })
+    onTestFinished(() => {
+      rmSync(linked.root, { recursive: true, force: true })
+    })
     const bundle = join(linked.root, 'workspace', 'bundle')
     const dependency = join(bundle, 'node_modules', '@t', 'theme')
     mkdirSync(dependency, { recursive: true })
-    writeFileSync(join(bundle, 'package.json'), JSON.stringify({ name: '@t/linked', dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+    writeFileSync(
+      join(bundle, 'package.json'),
+      JSON.stringify({ name: '@t/linked', dsh: { bundle: { patch: './cordis.patch.yml' } } }),
+    )
     writeFileSync(join(bundle, 'cordis.patch.yml'), "- insert:\n    - id: theme\n      name: '@t/theme'\n")
-    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: '@t/theme', dsh: { client: { platform: 'web' } } }))
+    writeFileSync(
+      join(dependency, 'package.json'),
+      JSON.stringify({ name: '@t/theme', dsh: { client: { platform: 'web' } } }),
+    )
     linked.pkg('@t/theme', {})
     symlinkSync(bundle, join(linked.root, 'app', 'node_modules', '@t', 'linked'), 'junction')
     linked.bundle('@t/base', '- insert: []\n')
     expect(linked.roster(['@t/base', '@t/linked'])).toEqual(['@t/theme'])
+  })
+
+  it('reads a linked bundle own browser declaration without a dependency self-link', () => {
+    const linked = new Scratch()
+    onTestFinished(() => {
+      rmSync(linked.root, { recursive: true, force: true })
+    })
+    const bundle = join(linked.root, 'workspace', 'self-bundle')
+    mkdirSync(bundle, { recursive: true })
+    writeFileSync(
+      join(bundle, 'package.json'),
+      JSON.stringify({
+        name: '@t/self',
+        dsh: {
+          bundle: { patch: './cordis.patch.yml' },
+          client: { platform: 'web', inject: ['@t/service'], immediately: true },
+        },
+      }),
+    )
+    writeFileSync(
+      join(bundle, 'cordis.patch.yml'),
+      "- insert:\n    - id: own\n      name: '@t/self/startup'\n    - id: own-again\n      name: '@t/self'\n",
+    )
+    linked.bundle('@t/base', '- insert: []\n')
+    symlinkSync(bundle, join(linked.root, 'app', 'node_modules', '@t', 'self'), 'junction')
+    expect(bundleRoster(['@t/base', '@t/self'], linked.anchor).rows).toEqual([
+      { name: '@t/self', inject: ['@t/service'], immediately: true },
+    ])
   })
 
   it('applies the layers in order and keeps enabled browser rows once, with their dsh.client declaration', () => {
@@ -96,7 +139,9 @@ describe('bundleRoster on a scratch installation', () => {
     scratch.web('plain')
     scratch.pkg('@t/host', { dsh: {} })
     scratch.pkg('@t/node', { dsh: { client: { platform: 'node' } } })
-    scratch.bundle('@t/base', `
+    scratch.bundle(
+      '@t/base',
+      `
 - insert:
     - id: a
       name: '@t/a'
@@ -113,8 +158,11 @@ describe('bundleRoster on a scratch installation', () => {
       name: '@t/a/extra'
     - id: builtin
       name: 'cordis:group'
-`)
-    scratch.bundle('@t/web', `
+`,
+    )
+    scratch.bundle(
+      '@t/web',
+      `
 - id: c
   disabled: true
 - insert:
@@ -127,7 +175,8 @@ describe('bundleRoster on a scratch installation', () => {
     - id: off
       name: '@t/off'
       disabled: true
-`)
+`,
+    )
     const roster = bundleRoster(['@t/base', '@t/web'], scratch.anchor)
     expect(roster.rows).toEqual([
       { name: '@t/a', inject: ['@t/b'], immediately: true },
@@ -139,10 +188,14 @@ describe('bundleRoster on a scratch installation', () => {
 
   it('concatenates a dsh.bundle.patch list in order', () => {
     scratch.web('@t/listed')
-    scratch.pkg('@t/list', { dsh: { bundle: { patch: ['./first.yml', './second.yml'] } } }, {
-      'first.yml': '- insert:\n    - id: listed\n      name: \'@t/listed\'\n      disabled: true\n',
-      'second.yml': '- id: listed\n  disabled: false\n',
-    })
+    scratch.pkg(
+      '@t/list',
+      { dsh: { bundle: { patch: ['./first.yml', './second.yml'] } } },
+      {
+        'first.yml': "- insert:\n    - id: listed\n      name: '@t/listed'\n      disabled: true\n",
+        'second.yml': '- id: listed\n  disabled: false\n',
+      },
+    )
     expect(scratch.roster(['@t/list'])).toEqual(['@t/listed'])
   })
 
@@ -150,7 +203,9 @@ describe('bundleRoster on a scratch installation', () => {
     scratch.web('@t/grouped')
     scratch.web('@t/grouped-off')
     scratch.web('@t/nested')
-    scratch.bundle('@t/groups', `
+    scratch.bundle(
+      '@t/groups',
+      `
 - insert:
     - id: on
       name: cordis:group
@@ -171,24 +226,32 @@ describe('bundleRoster on a scratch installation', () => {
       config:
         - id: grouped-off
           name: '@t/grouped-off'
-`)
+`,
+    )
     expect(scratch.roster(['@t/groups'])).toEqual(['@t/grouped', '@t/nested'])
   })
 
   it('refuses a browser row whose disabled value is a !!js expression', () => {
     scratch.web('@t/maybe')
-    scratch.bundle('@t/maybe-bundle', `
+    scratch.bundle(
+      '@t/maybe-bundle',
+      `
 - insert:
     - id: maybe
       name: '@t/maybe'
       disabled: !!js process.platform === 'win32'
-`)
-    expect(() => scratch.roster(['@t/maybe-bundle'])).toThrow('browser row @t/maybe has a `disabled` value this reader cannot evaluate')
+`,
+    )
+    expect(() => scratch.roster(['@t/maybe-bundle'])).toThrow(
+      'browser row @t/maybe has a `disabled` value this reader cannot evaluate',
+    )
   })
 
   it('evaluates profile conditions before deduplication and skips ignored row expressions', () => {
     scratch.web('@t/conditional')
-    scratch.bundle('@t/conditional-bundle', `
+    scratch.bundle(
+      '@t/conditional-bundle',
+      `
 - insert:
     - id: ignored
       name: ./ignored.mjs
@@ -199,15 +262,21 @@ describe('bundleRoster on a scratch installation', () => {
     - id: second
       name: '@t/conditional'
       disabled: false
-`)
-    expect(bundleRoster(['@t/conditional-bundle'], scratch.anchor, profileScope('web')).rows.map(row => row.name))
-      .toEqual(['@t/conditional'])
+`,
+    )
+    expect(
+      bundleRoster(['@t/conditional-bundle'], scratch.anchor, profileScope('web')).rows.map(
+        row => row.name,
+      ),
+    ).toEqual(['@t/conditional'])
   })
 
   it('combines ancestor and child conditions without evaluating disabled subtrees', () => {
     scratch.web('@t/conditional-on')
     scratch.web('@t/conditional-off')
-    scratch.bundle('@t/conditional-groups', `
+    scratch.bundle(
+      '@t/conditional-groups',
+      `
 - insert:
     - id: parent-off
       name: cordis:group
@@ -241,78 +310,108 @@ describe('bundleRoster on a scratch installation', () => {
             - id: child-on
               name: '@t/conditional-on'
               disabled: null
-`)
-    expect(bundleRoster(['@t/conditional-groups'], scratch.anchor, {}).rows.map(row => row.name))
-      .toEqual(['@t/conditional-on'])
+`,
+    )
+    expect(bundleRoster(['@t/conditional-groups'], scratch.anchor, {}).rows.map(row => row.name)).toEqual([
+      '@t/conditional-on',
+    ])
   })
 
   it('propagates evaluation failures and rejects unsupported literal flags with a scope', () => {
     scratch.web('@t/bad-condition')
-    scratch.bundle('@t/bad-expression', `
+    scratch.bundle(
+      '@t/bad-expression',
+      `
 - insert:
     - id: bad
       name: '@t/bad-condition'
       disabled: !!js missingConditionValue
-`)
+`,
+    )
     expect(() => bundleRoster(['@t/bad-expression'], scratch.anchor, {})).toThrow('missingConditionValue')
-    scratch.bundle('@t/bad-literal', `
+    scratch.bundle(
+      '@t/bad-literal',
+      `
 - insert:
     - id: bad
       name: '@t/bad-condition'
       disabled: not-a-boolean
-`)
+`,
+    )
     expect(() => bundleRoster(['@t/bad-literal'], scratch.anchor, {})).toThrow('disabled')
   })
 
   it('fails loud on a bundle that does not resolve, declares no patch, or whose patch is not a list', () => {
     expect(() => scratch.roster(['@t/missing'])).toThrow('cannot resolve bundle @t/missing from')
     scratch.pkg('@t/no-patch', { dsh: {} })
-    expect(() => scratch.roster(['@t/no-patch'])).toThrow('bundle @t/no-patch declares no dsh.bundle.patch file list in')
+    expect(() => scratch.roster(['@t/no-patch'])).toThrow(
+      'bundle @t/no-patch declares no dsh.bundle.patch file list in',
+    )
     scratch.pkg('@t/bad-patch-list', { dsh: { bundle: { patch: [1] } } })
-    expect(() => scratch.roster(['@t/bad-patch-list'])).toThrow('bundle @t/bad-patch-list declares no dsh.bundle.patch file list in')
+    expect(() => scratch.roster(['@t/bad-patch-list'])).toThrow(
+      'bundle @t/bad-patch-list declares no dsh.bundle.patch file list in',
+    )
     scratch.bundle('@t/not-a-list', 'insert: []\n')
     expect(() => scratch.roster(['@t/not-a-list'])).toThrow('must be a top-level list of patches')
   })
 
   it('fails loud on a patch that does not apply as written', () => {
-    scratch.bundle('@t/dangling', `
+    scratch.bundle(
+      '@t/dangling',
+      `
 - id: nowhere
   disabled: true
-`)
+`,
+    )
     expect(() => scratch.roster(['@t/dangling'])).toThrow('bundle patch patch: entry "nowhere" not found')
   })
 
   it('fails loud on an enabled row whose package does not resolve or names another package', () => {
-    scratch.bundle('@t/unresolved', `
+    scratch.bundle(
+      '@t/unresolved',
+      `
 - insert:
     - id: ghost
       name: '@t/ghost'
-`)
-    expect(() => scratch.roster(['@t/unresolved'])).toThrow('cannot resolve plugin package @t/ghost from @t/unresolved')
-    scratch.bundle('@t/builtin', `
+`,
+    )
+    expect(() => scratch.roster(['@t/unresolved'])).toThrow(
+      'cannot resolve plugin package @t/ghost from @t/unresolved',
+    )
+    scratch.bundle(
+      '@t/builtin',
+      `
 - insert:
     - id: fs
       name: fs
-`)
+`,
+    )
     // A Node builtin name has no resolution paths at all.
     expect(() => scratch.roster(['@t/builtin'])).toThrow('cannot resolve plugin package fs from @t/builtin')
     scratch.pkg('@t/alias', { name: '@t/real' })
-    scratch.bundle('@t/misnamed', `
+    scratch.bundle(
+      '@t/misnamed',
+      `
 - insert:
     - id: alias
       name: '@t/alias'
-`)
+`,
+    )
     expect(() => scratch.roster(['@t/misnamed'])).toThrow('names "@t/real", expected @t/alias')
   })
 })
 
-
 it('exhausts uneven linked-bundle search paths before reporting a missing plugin', () => {
   const scratch = new Scratch()
-  onTestFinished(() => { rmSync(scratch.root, { recursive: true, force: true }) })
+  onTestFinished(() => {
+    rmSync(scratch.root, { recursive: true, force: true })
+  })
   const bundle = join(scratch.root, 'workspace', 'nested', 'deeper', 'bundle')
   mkdirSync(bundle, { recursive: true })
-  writeFileSync(join(bundle, 'package.json'), JSON.stringify({ name: '@t/deep', dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+  writeFileSync(
+    join(bundle, 'package.json'),
+    JSON.stringify({ name: '@t/deep', dsh: { bundle: { patch: './cordis.patch.yml' } } }),
+  )
   writeFileSync(join(bundle, 'cordis.patch.yml'), "- insert:\n    - id: missing\n      name: '@t/absent'\n")
   scratch.bundle('@t/base', '- insert: []\n')
   symlinkSync(bundle, join(scratch.root, 'app', 'node_modules', '@t', 'deep'), 'junction')
