@@ -25,6 +25,9 @@ name: E2E (real DeepSeek API)
 # The fork/secret model and its public-repo implications are recorded in
 # .agents/notes/implemented/testing/2026-06-19-real-api-e2e-ci.md.
 #
+# Forks run this paid, credential-dependent suite only by manual dispatch.
+# Automatic keyless checks remain in ci.yml and ci-master.yml.
+#
 # Note: scheduled triggers are auto-disabled after 60 days of repo inactivity;
 # push/pull_request/workflow_dispatch act as backstops.
 on:
@@ -57,11 +60,12 @@ jobs:
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith'
           && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     name: e2e
-    # Run on every trusted event. Skip untrusted PRs (forks + Dependabot) where
-    # the secret is withheld — they would otherwise hard-fail the preflight.
+    # Forks opt in by manual dispatch; upstream keeps automatic real-API checks.
+    # Skip untrusted PRs (forks + Dependabot), where secrets are withheld.
     if: >-
-      github.event_name != 'pull_request'
-      || !(github.event.pull_request.head.repo.fork || github.event.pull_request.user.login == 'dependabot[bot]')
+      (!github.event.repository.fork || github.event_name == 'workflow_dispatch')
+      && (github.event_name != 'pull_request'
+          || !(github.event.pull_request.head.repo.fork || github.event.pull_request.user.login == 'dependabot[bot]'))
     # Profile e2e files can each own several complete dsh subprocess trees, so
     # four file workers preserve process/PTY headroom. Tests retain 120s/test
     # and retry 2; 45m still bounds retry storms against a slow API.
