@@ -1,2 +1,0 @@
-- list "Background jobs":
-  - status: Connecting to background jobs

@@ -1,22 +1,32 @@
 /** Shared entry values and ordered writes over the Host configuration mirror. */
 
-import type { Context } from '@deepseek-ai/cordis'
+import { DeveloperToolsPreference } from './developer-tools.ts'
+import { DEVELOPER_TOOLS_NAMESPACE } from '../developer-tools-settings.ts'
 import { Service } from '@deepseek-ai/cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type {
-  RemoteResult,
-  SettingsNamespaceView,
-  SettingsPathOpView,
+  SettingsNamespaceView, SettingsPathOpView,
 } from '@deepseek-ai/dsh-api-remotes/client'
-// The allowlist and event declaration jointly type forwarded settings events.
-// The providing plugin owns runtime Remote injection and invalidation subscriptions.
-import type {} from '@deepseek-ai/dsh-api-remotes/types'
-import type {} from '@deepseek-ai/dsh-settings/types'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
-import { DEVELOPER_TOOLS_NAMESPACE } from '../developer-tools-settings.ts'
-import { DeveloperToolsPreference } from './developer-tools.ts'
-import type { ConfigForm, ConfigFormSnapshot } from './config-form-types.ts'
+// Type-only, and deliberately NOT `@deepseek-ai/dsh-api-remotes/client`: this
+// package is reachable from the Host build graph through its feature-package
+// callers, and api-remotes' Client face imports a Host-tsdown-generated
+// `/remote` artifact, which would deadlock the Host tsc phase. The gateway's
+// Client half declares `ctx.remote` with no generated import, and the
+// allowlist's `types` subpath is a pure-type source file, so the pair supplies
+// `$on` and its key face without dragging a build artifact in. The runtime
+// `remote` injection belongs to the providing plugin's apply, which registers
+// the mirror's invalidation subscriptions.
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/types'
+// The forwarded event's own declaration: `$on`'s key face is
+// `Extract<keyof Events, keyof Selection>`, so the allowlist alone resolves to
+// never — the owning package's client-safe, type-only subpath supplies the
+// cordis `Events` entry (and with it the branded `SettingsNamespace`).
+import type {} from '@deepseek-ai/dsh-settings/types'
 import type { SettingsSchemaService } from './schema.ts'
+import type { ConfigForm, ConfigFormSnapshot } from './config-form-types.ts'
 import { SettingsDescribeMirror, type SettingsDescribeFace } from './settings-mirror.ts'
 
 /** Domain-owned description of one settings namespace consumed by a browser plugin. */
@@ -71,9 +81,7 @@ export class ConfigFormController<T> implements ConfigForm<T> {
       revision: undefined,
       writable: false,
     })
-    this.unsubscribe = mirror.subscribe(() => {
-      this.derive()
-    })
+    this.unsubscribe = mirror.subscribe(() => { this.derive() })
     this.derive()
   }
 
@@ -118,38 +126,24 @@ export class ConfigFormController<T> implements ConfigForm<T> {
    * @param expectedRevision - optional fixed revision read by the domain editor.
    * @returns whether the Host accepted the mutation, after any recovery read.
    */
-  async mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean> {
-    const result = await this.mutateResult(ops, expectedRevision)
-    return result?.ok === true
-  }
-
-  /**
-   * Queue one atomic namespace mutation with its original Remote result; see {@link ConfigForm.mutateResult}.
-   * @param ops - ordered field operations copied when queued.
-   * @param expectedRevision - optional fixed revision read by the domain editor.
-   * @returns the Remote answer after any recovery, or undefined for a local skip.
-   */
-  mutateResult(
-    ops: readonly SettingsPathOpView[],
-    expectedRevision?: number,
-  ): Promise<RemoteResult<SettingsNamespaceView> | undefined> {
-    const ownedOps = structuredClone([...ops])
+  mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean> {
+    const ownedOps = structuredClone(ops) as SettingsPathOpView[]
     const generation = ++this.writeGeneration
     return this.enqueue(async () => {
       const revision = expectedRevision ?? this.pendingRevision ?? this.getSnapshot().revision
       const response = await this.ctx.remote.settings.mutate(this.spec.namespace, ownedOps, revision)
       if (!response.ok) {
         await this.recover(generation)
-        return response
+        return false
       }
-      if (this.disposed) return response
+      if (this.disposed) return true
       if (generation === this.writeGeneration) {
         this.pendingRevision = undefined
         this.mirror.acceptView(response.value)
       } else {
         this.pendingRevision = response.value.revision
       }
-      return response
+      return true
     })
   }
 
@@ -172,20 +166,15 @@ export class ConfigFormController<T> implements ConfigForm<T> {
     await this.tail
   }
 
-  private enqueue(
-    operation: () => Promise<RemoteResult<SettingsNamespaceView>>,
-  ): Promise<RemoteResult<SettingsNamespaceView> | undefined> {
-    if (this.disposed) return Promise.resolve(undefined)
+  private enqueue(operation: () => Promise<boolean>): Promise<boolean> {
+    if (this.disposed) return Promise.resolve(false)
     const task = this.tail.then(async () => {
-      if (this.disposed) return undefined
+      if (this.disposed) return false
       return await operation()
     })
     // The returned task carries its own settlement to the caller; the queue
     // tail is kept fulfilled so one failed subscriber cannot strand later operations.
-    this.tail = task.then(
-      () => {},
-      () => {},
-    )
+    this.tail = task.then(() => {}, () => {})
     return task
   }
 
@@ -227,7 +216,7 @@ export class ConfigFormController<T> implements ConfigForm<T> {
       // the value is treated exactly like a schema-invalid one.
       return undefined
     }
-    return failure === undefined ? (view.value as T) : undefined
+    return failure === undefined ? view.value as T : undefined
   }
 }
 
@@ -262,25 +251,19 @@ export class ConfigForms extends Service {
    * @param config - the shared describe mirror every shared form derives from
    * and the settings-owned schema operations.
    */
-  constructor(
-    ctx: Context,
-    config: {
-      mirror: SettingsDescribeMirror
-      schema: SettingsSchemaService
-    },
-  ) {
+  constructor(ctx: Context, config: {
+    mirror: SettingsDescribeMirror
+    schema: SettingsSchemaService
+  }) {
     super(ctx, 'configForms')
     this.mirror = config.mirror
     this.schema = config.schema
     this.owner = ctx
     this.developerTools = new DeveloperToolsPreference(this.get(DEVELOPER_TOOLS_NAMESPACE))
-    ctx.effect(
-      () => async () => {
-        await Promise.all([...this.forms.values()].map(form => form.dispose()))
-        this.forms.clear()
-      },
-      'ui-settings: configuration forms',
-    )
+    ctx.effect(() => async () => {
+      await Promise.all([...this.forms.values()].map(form => form.dispose()))
+      this.forms.clear()
+    }, 'ui-settings: configuration forms')
   }
 
   /**
@@ -301,7 +284,9 @@ export class ConfigForms extends Service {
   get<T>(entryId: string): ConfigForm<T> {
     const existing = this.forms.get(entryId)
     if (existing !== undefined) return existing as ConfigFormController<T>
-    const form = new ConfigFormController<T>(this.owner, { namespace: entryId }, this.mirror, this.schema)
+    const form = new ConfigFormController<T>(
+      this.owner, { namespace: entryId }, this.mirror, this.schema,
+    )
     this.forms.set(entryId, form)
     void this.mirror.ensure()
     return form
@@ -320,10 +305,7 @@ export class ConfigForms extends Service {
    * @param register - registers the contribution, given every namespace the Host serves; returns its disposer.
    * @returns the disposer ending the watch and any live registration.
    */
-  whileServed(
-    namespaces: readonly string[],
-    register: (served: ReadonlySet<string>) => () => void,
-  ): () => void {
+  whileServed(namespaces: readonly string[], register: (served: ReadonlySet<string>) => () => void): () => void {
     let off: (() => void) | undefined
     const sync = (): void => {
       const served = new Set(this.mirror.getSnapshot().view?.namespaces.map(view => view.ns) ?? [])

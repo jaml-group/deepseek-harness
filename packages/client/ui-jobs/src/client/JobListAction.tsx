@@ -1,22 +1,16 @@
-import type { JobRosterState, JobsSnapshot, JobView, ObservedJob } from '@deepseek-ai/dsh-api-job-controller/client'
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { createPortal } from 'react-dom'
+import type { JobsSnapshot, JobView, ObservedJob } from '@deepseek-ai/dsh-api-job-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
-  IconChevronDownOutlineRegular,
-  IconStopFillRegular,
-  MenuSurface,
-  StateDot,
-  TerminalBlock,
-  useAnchoredPosition,
+  IconChevronDownOutlineRegular, IconLayersOutlineRegular, IconStopFillRegular, MenuSurface, StateDot, TerminalBlock, Tooltip,
   useDismissOnOutsidePointer,
-  type StateDotState,
-  type TerminalBlockLabels,
+  type StateDotState, type TerminalBlockLabels,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
-import { createPortal } from 'react-dom'
-import css from './JobListAction.module.css'
 import { NS } from './locales.ts'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import css from './JobListAction.module.css'
 
 /** Registration-side business face for the job list. */
 export interface JobListInjected {
@@ -27,15 +21,11 @@ export interface JobListInjected {
       subscribe(listener: () => void): () => void
     }
   }
-  /** Read the current jobs snapshot at action admission, before renderer publication. */
-  readJobs: () => JobsSnapshot
   /**
    * Keep one session's roster current while the list is mounted; returns the
    * stop function. Reference-counted by the client service.
    */
   watchRows: (sessionId: SessionId) => () => void
-  /** Retry a failed held roster without acquiring another watch. */
-  retryRows: (sessionId: SessionId) => void
   /**
    * Start observing one job's live output; returns the stop function.
    * Reference-counted by the client service, so panels can overlap safely.
@@ -50,21 +40,13 @@ export interface JobListInjected {
 }
 
 /** Full props for the session-header job-list action. */
-export type JobListActionProps = PropsRuntime<'conversation.session.header.actions'> &
-  PropsLocale<typeof NS> &
-  InjectFace<JobListInjected>
+export type JobListActionProps =
+  PropsRuntime<'conversation.session.header.actions'>
+  & PropsLocale<typeof NS>
+  & InjectFace<JobListInjected>
 
 /** Stable empty list so a session with no jobs keeps one array identity. */
 const NO_JOBS: readonly JobView[] = []
-
-/** Minimum gap kept between the popover and the viewport edges (the Menu primitive's portal margin). */
-const VIEWPORT_MARGIN = 12
-
-/** Distance between the trigger's bottom edge and the popover. */
-const MENU_GAP = 5
-
-/** Unplaced list: hidden but laid out so the first placement measures real dimensions. */
-const MEASURE_STYLE: CSSProperties = { visibility: 'hidden', left: 0, top: 0 }
 
 /** Keyboard-reachable controls inside the list, in document order. */
 const FOCUSABLE = 'button:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])'
@@ -74,6 +56,7 @@ const KILL_ARM_MS = 3_000
 
 /** How long a failed kill keeps its hint before the button resets. */
 const KILL_FAILED_MS = 4_000
+
 
 function isLive(job: JobView): boolean {
   return job.status === 'running' || job.status === 'stopping'
@@ -104,37 +87,25 @@ function assertNever(value: never): never {
  */
 function dotState(status: JobView['status']): StateDotState {
   switch (status) {
-    case 'running':
-      return 'ongoing'
-    case 'stopping':
-      return 'warning'
-    case 'completed':
-      return 'done'
-    case 'killed':
-      return 'warning'
-    case 'failed':
-      return 'error'
+    case 'running': return 'ongoing'
+    case 'stopping': return 'warning'
+    case 'completed': return 'done'
+    case 'killed': return 'warning'
+    case 'failed': return 'error'
     /* v8 ignore next -- closed wire status union */
-    default:
-      return assertNever(status)
+    default: return assertNever(status)
   }
 }
 
 function statusLabel(status: JobView['status'], t: TranslateNS<typeof NS>): string {
   switch (status) {
-    case 'running':
-      return t('status.running')
-    case 'stopping':
-      return t('status.stopping')
-    case 'completed':
-      return t('status.completed')
-    case 'killed':
-      return t('status.killed')
-    case 'failed':
-      return t('status.failed')
+    case 'running': return t('status.running')
+    case 'stopping': return t('status.stopping')
+    case 'completed': return t('status.completed')
+    case 'killed': return t('status.killed')
+    case 'failed': return t('status.failed')
     /* v8 ignore next -- closed wire status union */
-    default:
-      return assertNever(status)
+    default: return assertNever(status)
   }
 }
 
@@ -206,15 +177,7 @@ function ordered(jobs: readonly JobView[]): JobView[] {
 type KillState = 'idle' | 'armed' | 'pending' | 'failed'
 
 /** One job row plus, when observable and expanded, its live output panel. */
-function JobItem({
-  job,
-  view,
-  expanded,
-  now,
-  onToggle,
-  kill,
-  t,
-}: {
+function JobItem({ job, view, expanded, now, onToggle, kill, t }: {
   job: JobView
   view: ObservedJob | undefined
   expanded: boolean
@@ -233,153 +196,149 @@ function JobItem({
   const elapsed = live ? now - job.startedAt : (job.finishedAt ?? job.startedAt) - job.startedAt
   const duration = formatDuration(elapsed, t)
   const durationCell = (
-    <span className={css.duration} title={t(live ? 'duration.title.live' : 'duration.title.done', { duration })}>
+    <span
+      className={css.duration}
+      title={t(live ? 'duration.title.live' : 'duration.title.done', { duration })}
+    >
       {duration}
     </span>
   )
-  const body = live ? (
-    <>
-      <StateDot state={dotState(job.status)} className={css.rowDot} />
-      <span className={css.main}>
-        <span className={css.primary}>
-          <span className={css.label} title={job.label}>
-            {job.label}
+  const body = live
+    ? (
+      <>
+        <StateDot state={dotState(job.status)} className={css.rowDot} />
+        <span className={css.main}>
+          <span className={css.primary}>
+            <span className={css.label} title={job.label}>{job.label}</span>
+          </span>
+          <span className={css.secondary} title={detail ?? status}>
+            <span className={css.kind}>{job.kind}</span>
+            {detail !== undefined ? <span className={css.status}>{detail}</span> : null}
+            {durationCell}
           </span>
         </span>
-        <span className={css.secondary} title={detail ?? status}>
-          <span className={css.kind}>{job.kind}</span>
-          {detail !== undefined ? <span className={css.status}>{detail}</span> : null}
-          {durationCell}
-        </span>
-      </span>
-      {/* A live row is always observable: its output may still arrive. */}
-      <span className={css.chevronBox}>
-        <IconChevronDownOutlineRegular
-          size={12}
-          className={expanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
-        />
-      </span>
-    </>
-  ) : (
-    <>
-      <StateDot state={dotState(job.status)} className={css.rowDot} />
-      <span className={css.kind}>{job.kind}</span>
-      <span className={css.label} title={job.label}>
-        {job.label}
-      </span>
-      <span className={css.status} title={detail ?? status}>
-        {detail ?? status}
-      </span>
-      {durationCell}
-      {observable ? (
+        {/* A live row is always observable: its output may still arrive. */}
         <span className={css.chevronBox}>
-          <IconChevronDownOutlineRegular
-            size={12}
-            className={expanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
-          />
+          <IconChevronDownOutlineRegular size={12} className={expanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
         </span>
-      ) : null}
-    </>
-  )
-  const killTitle =
-    kill === undefined
-      ? undefined
-      : kill.state === 'armed'
-        ? t('kill.confirm')
-        : kill.state === 'failed'
-          ? t('kill.failed')
-          : t('kill.stop', { label: job.label })
+      </>
+    )
+    : (
+      <>
+        <StateDot state={dotState(job.status)} className={css.rowDot} />
+        <span className={css.kind}>{job.kind}</span>
+        <span className={css.label} title={job.label}>{job.label}</span>
+        <span className={css.status} title={detail ?? status}>{detail ?? status}</span>
+        {durationCell}
+        {observable
+          ? (
+            <span className={css.chevronBox}>
+              <IconChevronDownOutlineRegular size={12} className={expanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+            </span>
+          )
+          : null}
+      </>
+    )
+  const killTitle = kill === undefined
+    ? undefined
+    : kill.state === 'armed'
+      ? t('kill.confirm')
+      : kill.state === 'failed' ? t('kill.failed') : t('kill.stop', { label: job.label })
   return (
     <li className={css.item}>
       <div className={live ? `${css.rowLine} ${css.rowLineLive}` : css.rowLine}>
-        {observable ? (
-          <button
-            type="button"
-            className={live ? css.row : `${css.row} ${css.rowSettled}`}
-            aria-expanded={expanded}
-            aria-label={t(expanded ? 'row.collapseAria' : 'row.expandAria', { label: job.label })}
-            onClick={onToggle}
-          >
-            {body}
-          </button>
-        ) : (
-          <span className={`${css.row} ${css.rowSettled} ${css.rowStatic}`}>{body}</span>
-        )}
-        {kill !== undefined ? (
-          <button
-            type="button"
-            className={
-              kill.state === 'armed'
-                ? `${css.stop} ${css.stopArmed}`
-                : kill.state === 'failed'
-                  ? `${css.stop} ${css.stopFailed}`
-                  : css.stop
-            }
-            data-kill-state={kill.state}
-            disabled={kill.state === 'pending'}
-            aria-label={killTitle}
-            title={killTitle}
-            onClick={kill.onPress}
-          >
-            <IconStopFillRegular size={10} />
-            {/* The armed press must be legible without hover: the button
+        {observable
+          ? (
+            <button
+              type="button"
+              className={live ? css.row : `${css.row} ${css.rowSettled}`}
+              aria-expanded={expanded}
+              aria-label={t(expanded ? 'row.collapseAria' : 'row.expandAria', { label: job.label })}
+              onClick={onToggle}
+            >
+              {body}
+            </button>
+          )
+          : (
+            <span className={`${css.row} ${css.rowSettled} ${css.rowStatic}`}>
+              {body}
+            </span>
+          )}
+        {kill !== undefined
+          ? (
+            <button
+              type="button"
+              className={
+                kill.state === 'armed'
+                  ? `${css.stop} ${css.stopArmed}`
+                  : kill.state === 'failed' ? `${css.stop} ${css.stopFailed}` : css.stop
+              }
+              data-kill-state={kill.state}
+              disabled={kill.state === 'pending'}
+              aria-label={killTitle}
+              title={killTitle}
+              onClick={kill.onPress}
+            >
+              <IconStopFillRegular size={10} />
+              {/* The armed press must be legible without hover: the button
                   widens into a labeled confirm pill instead of a tint only. */}
-            {kill.state === 'armed' ? <span className={css.stopLabel}>{t('kill.confirmAction')}</span> : null}
-          </button>
-        ) : null}
+              {kill.state === 'armed' ? <span className={css.stopLabel}>{t('kill.confirmAction')}</span> : null}
+            </button>
+          )
+          : null}
       </div>
-      {expanded && view !== undefined ? (
-        <div className={css.panel}>
-          {view.gapBefore ? <div className={css.notice}>{t('output.gap')}</div> : null}
-          {view.error !== undefined ? (
-            <div className={`${css.notice} ${css.noticeError}`}>{t('output.error', { error: view.error })}</div>
-          ) : null}
-          <TerminalBlock
-            command={job.label}
-            output={view.text}
-            running={live}
-            copyText={job.label}
-            // The row above the panel already carries the state dot.
-            runStateDot={false}
-            // The panel scrolls its output (a stylesheet height cap) instead
-            // of collapsing the middle.
-            maxLines={Number.POSITIVE_INFINITY}
-            labels={labels}
-          />
-        </div>
-      ) : null}
+      {expanded && view !== undefined
+        ? (
+          <div className={css.panel}>
+            {view.gapBefore ? <div className={css.notice}>{t('output.gap')}</div> : null}
+            {view.error !== undefined
+              ? <div className={`${css.notice} ${css.noticeError}`}>{t('output.error', { error: view.error })}</div>
+              : null}
+            <TerminalBlock
+              command={job.label}
+              output={view.text}
+              running={live}
+              copyText={job.label}
+              // The row above the panel already carries the state dot.
+              runStateDot={false}
+              // The panel scrolls its output (a stylesheet height cap) instead
+              // of collapsing the middle.
+              maxLines={Number.POSITIVE_INFINITY}
+              labels={labels}
+            />
+          </div>
+        )
+        : null}
     </li>
   )
 }
 
 /**
  * Session-header entry point for this session's background jobs. Mounting it
- * keeps the session's roster stream open. Loading and failed rosters expose
- * their state; a ready roster with no visible jobs hides the action.
- * Expanding an observable row (a live job,
+ * keeps the session's roster stream open; it renders nothing at all until the
+ * session can see at least one job. Expanding an observable row (a live job,
  * or a settled one with retained output) starts its observation stream, and
  * collapsing (or closing the popover) stops it — output only flows while
  * someone is watching. A running row carries a two-press stop button that
- * requests a human kill through the job controller while the roster is ready.
+ * requests a human kill through the job controller. Non-touch hover on a
+ * text-visible trigger opens after 150ms and closes after 120ms outside both
+ * trigger and portal. Compact triggers toggle on click; ArrowDown opens and
+ * pins either layout. Interacting inside also pins the menu until explicit
+ * dismissal; timers and the pin are local to the mounted session.
  * @param props - runtime slot currency, the jobs snapshot hook, the roster,
  *   observation, and kill controls, and the namespace translator.
- * @returns the trigger and popover, or null before a watch or for a ready empty roster.
+ * @returns the trigger and its popover list, or null when there is nothing to show.
  */
-export function JobListAction({
-  sessionId,
-  useJobs,
-  readJobs,
-  watchRows,
-  retryRows,
-  observe,
-  killJob,
-  t,
-}: JobListActionProps) {
+export function JobListAction({ sessionId, useJobs, watchRows, observe, killJob, t }: JobListActionProps) {
+  const activityId = useId()
   const jobs = useJobs(state => state.rows[sessionId]) ?? NO_JOBS
-  const roster = useJobs(state => state.rosterStatus[sessionId])
-  const rosterReady = roster?.state === 'ready'
   const observedViews = useJobs(state => state.observed)
-  const [open, setOpen] = useState(false)
+  const [menuState, setMenuState] = useState<{ sessionId: SessionId; mode: 'closed' | 'hover' | 'pinned' }>(
+    { sessionId, mode: 'closed' },
+  )
+  const hoverOpenTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const hoverCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  if (menuState.sessionId !== sessionId) setMenuState({ sessionId, mode: 'closed' })
   const [expandedKey, setExpandedKey] = useState<string | undefined>(undefined)
   const [now, setNow] = useState(() => Date.now())
   // Settled-section fold: an explicit user toggle wins; before one, the tail
@@ -389,11 +348,10 @@ export function JobListAction({
   // registry keeps its records and a later settlement reappears normally).
   const [clearedKeys, setClearedKeys] = useState<ReadonlySet<string>>(() => new Set())
   // One kill affordance advances at a time: arming a row disarms any other.
-  const [killPhase, setKillPhase] = useState<
-    { key: string; state: Exclude<KillState, 'idle'>; roster: JobRosterState | undefined } | undefined
-  >(undefined)
+  const [killPhase, setKillPhase] = useState<{ key: string; state: Exclude<KillState, 'idle'> } | undefined>(undefined)
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const countRef = useRef<HTMLSpanElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
   const rows = useMemo(() => ordered(jobs), [jobs])
@@ -404,18 +362,64 @@ export function JobListAction({
   )
   const settledExpanded = settledOpen ?? liveRows.length === 0
   const visibleCount = liveRows.length + settledRows.length
+  const hasJobs = visibleCount > 0
+  const open = hasJobs && menuState.sessionId === sessionId && menuState.mode !== 'closed'
 
-  // The popover portals to the document body: the session header sits in a
-  // clipping column that the right sidebar borders or overlaps, so an in-place
-  // popover is cut off or covered there.
-  const menuPosition = useAnchoredPosition({
-    open,
-    anchorRef: rootRef,
-    panelRef: menuRef,
-    gap: MENU_GAP,
-    margin: VIEWPORT_MARGIN,
-  })
-  useDismissOnOutsidePointer(rootRef, open, setOpen, menuRef)
+  const cancelHover = useCallback((): void => {
+    clearTimeout(hoverOpenTimer.current)
+    clearTimeout(hoverCloseTimer.current)
+    hoverOpenTimer.current = undefined
+    hoverCloseTimer.current = undefined
+  }, [])
+
+  const changeOpen = useCallback((next: boolean): void => {
+    cancelHover()
+    if (next) setNow(Date.now())
+    setMenuState({ sessionId, mode: next ? 'pinned' : 'closed' })
+  }, [cancelHover, sessionId])
+
+  // CSS owns the compact breakpoint; read its result only for pointer gestures.
+  const allowsHoverOpen = (): boolean => countRef.current !== null
+    && getComputedStyle(countRef.current).display !== 'none'
+
+  const hoverEnter = (event: PointerEvent<HTMLElement>): void => {
+    if (event.pointerType === 'touch') return
+    cancelHover()
+    if (open || !allowsHoverOpen()) return
+    hoverOpenTimer.current = setTimeout(() => {
+      hoverOpenTimer.current = undefined
+      if (!allowsHoverOpen()) return
+      setNow(Date.now())
+      setMenuState({ sessionId, mode: 'hover' })
+    }, 150)
+  }
+
+  const hoverLeave = (event: PointerEvent<HTMLElement>): void => {
+    if (event.pointerType === 'touch') return
+    cancelHover()
+    if (!open || menuState.mode === 'pinned') return
+    hoverCloseTimer.current = setTimeout(() => {
+      hoverCloseTimer.current = undefined
+      setMenuState({ sessionId, mode: 'closed' })
+    }, 120)
+  }
+
+  // Timers belong to this mounted session and cannot survive a disappearing trigger.
+  useEffect(() => cancelHover, [cancelHover, sessionId, hasJobs])
+
+  const anchorName = `--dsh-jobs-${useId().replaceAll(':', '')}`
+  useDismissOnOutsidePointer(rootRef, open, changeOpen, menuRef)
+  // Hover does not move focus; Escape must also work from the rest of the page.
+  useEffect(() => {
+    if (!open) return
+    const dismiss = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      changeOpen(false)
+    }
+    document.addEventListener('keydown', dismiss)
+    return () => { document.removeEventListener('keydown', dismiss) }
+  }, [open, changeOpen])
 
   // The roster follows the mounted session: one stream while this control
   // lives, released with it.
@@ -425,28 +429,25 @@ export function JobListAction({
   useEffect(() => {
     if (!open || liveRows.length === 0) return
     setNow(Date.now())
-    const timer = setInterval(() => {
-      setNow(Date.now())
-    }, 1_000)
-    return () => {
-      clearInterval(timer)
-    }
+    const timer = setInterval(() => { setNow(Date.now()) }, 1_000)
+    return () => { clearInterval(timer) }
   }, [open, liveRows.length])
 
   // Observation follows visibility: the stream opens when an observable panel
   // expands and closes when it collapses, unmounts, or the popover closes.
-  const expandedRow = open && expandedKey !== undefined ? rows.find(job => String(job.id) === expandedKey) : undefined
+  const expandedRow = open && expandedKey !== undefined
+    ? rows.find(job => String(job.id) === expandedKey)
+    : undefined
   const activeJob = expandedRow !== undefined && isObservable(expandedRow) ? expandedRow.id : undefined
   useEffect(() => {
     if (activeJob === undefined) return
     return observe(sessionId, activeJob)
   }, [sessionId, activeJob, observe])
 
-  // The last visible job disappearing removes this control; close first so
-  // focus does not vanish from an unmounting node.
+  // A returning roster starts closed rather than restoring an obsolete pin.
   useEffect(() => {
-    if (visibleCount === 0 && rosterReady && open) setOpen(false)
-  }, [visibleCount, rosterReady, open])
+    if (!hasJobs) changeOpen(false)
+  }, [hasJobs, changeOpen])
 
   // An expanded row that left the list (owner disposal) folds its panel.
   useEffect(() => {
@@ -462,71 +463,44 @@ export function JobListAction({
   useEffect(() => {
     if (killPhase === undefined || killPhase.state === 'pending') return
     const timer = setTimeout(
-      () => {
-        setKillPhase(undefined)
-      },
+      () => { setKillPhase(undefined) },
       killPhase.state === 'armed' ? KILL_ARM_MS : KILL_FAILED_MS,
     )
-    return () => {
-      clearTimeout(timer)
-    }
+    return () => { clearTimeout(timer) }
   }, [killPhase])
 
   // A phase whose row stopped being killable (settled, stopping, removed)
   // has no button to describe any more.
   useEffect(() => {
-    if (
-      killPhase !== undefined &&
-      (!rosterReady ||
-        killPhase.roster !== roster ||
-        !rows.some(job => String(job.id) === killPhase.key && job.status === 'running'))
-    ) {
+    if (killPhase !== undefined
+      && !rows.some(job => String(job.id) === killPhase.key && job.status === 'running')) {
       setKillPhase(undefined)
     }
-  }, [rows, roster, rosterReady, killPhase])
+  }, [rows, killPhase])
 
   const pressKill = (job: JobView): void => {
-    const snapshot = readJobs()
-    const current = snapshot.rows[sessionId]?.find(row => row.id === job.id)
-    if (
-      snapshot.rosterStatus[sessionId] !== roster ||
-      roster?.state !== 'ready' ||
-      current?.status !== 'running' ||
-      current.owner !== job.owner ||
-      current.startedAt !== job.startedAt
-    ) {
-      setKillPhase(undefined)
-      return
-    }
     const key = String(job.id)
-    if (killPhase?.key !== key || killPhase.state !== 'armed' || killPhase.roster !== roster) {
-      setKillPhase({ key, state: 'armed', roster })
+    if (killPhase?.key !== key || killPhase.state !== 'armed') {
+      setKillPhase({ key, state: 'armed' })
       return
     }
-    setKillPhase({ key, state: 'pending', roster })
+    setKillPhase({ key, state: 'pending' })
     void killJob(sessionId, key).then((ok) => {
       // An admitted kill stays pending: the unary response (HTTP) and the jobs
       // frames (control stream) have no cross-carrier ordering, so re-enabling
       // here could offer a duplicate kill while the row still reads `running`.
       // The authoritative jobs frame flips the row to `stopping`, which removes
       // the button and clears the phase through the killable-set effect above.
-      setKillPhase(current => (current?.key === key && !ok ? { ...current, state: 'failed' } : current))
+      setKillPhase(current => current?.key === key && !ok
+        ? { key, state: 'failed' }
+        : current)
     })
   }
 
-  if (roster === undefined || (visibleCount === 0 && rosterReady)) return null
+  if (visibleCount === 0) return null
 
-  const countKey =
-    liveRows.length > 0
-      ? liveRows.length === 1
-        ? 'count.live.one'
-        : 'count.live.other'
-      : visibleCount === 1
-        ? 'count.idle.one'
-        : 'count.idle.other'
-  const countLabel = rosterReady
-    ? t(countKey, { count: liveRows.length > 0 ? liveRows.length : visibleCount })
-    : t(roster.state === 'error' ? 'roster.error' : 'roster.loading')
+  const count = liveRows.length > 0 ? liveRows.length : visibleCount
+  const countLabel = t(count === 1 ? 'count.idle.one' : 'count.idle.other', { count })
 
   const clearSettled = (): void => {
     setClearedKeys((current) => {
@@ -543,20 +517,20 @@ export function JobListAction({
   // keep the in-place order: the trigger leads into the list, and leaving
   // either end of the list returns to the trigger's position in the page.
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (!open) return
     const trigger = triggerRef.current
     if (event.key === 'Escape') {
       event.preventDefault()
-      setOpen(false)
+      changeOpen(false)
       trigger?.focus()
       return
     }
+    if (!open) return
     const menu = menuRef.current
     /* v8 ignore next -- both refs are attached while the open list renders. */
     if (event.key !== 'Tab' || trigger === null || menu === null) return
     const focusable = [...menu.querySelectorAll<HTMLElement>(FOCUSABLE)]
-    if (focusable.length === 0) return
     if (event.target === trigger) {
+      // Every list carries a control: a live row's toggle or the settled section's buttons.
       if (event.shiftKey) return
       event.preventDefault()
       focusable[0]?.focus()
@@ -576,93 +550,82 @@ export function JobListAction({
       expanded={expandedKey === String(job.id)}
       now={now}
       onToggle={() => {
-        setExpandedKey(current => (current === String(job.id) ? undefined : String(job.id)))
+        setExpandedKey(current => current === String(job.id) ? undefined : String(job.id))
       }}
-      {...(rosterReady && job.status === 'running'
+      {...job.status === 'running'
         ? {
           kill: {
-            state: killPhase?.key === String(job.id) ? killPhase.state : ('idle' as const),
-            onPress: () => {
-              pressKill(job)
-            },
+            state: killPhase?.key === String(job.id) ? killPhase.state : 'idle' as const,
+            onPress: () => { pressKill(job) },
           },
         }
-        : {})}
+        : {}}
       t={t}
     />
   )
 
   return (
-    <div ref={rootRef} onKeyDown={onKeyDown}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={css.trigger}
-        aria-expanded={open}
-        aria-label={countLabel}
-        onClick={() => {
-          // Sample the clock in the same commit that opens the list: the
-          // mount-time value predates every job, so the first painted frame
-          // would otherwise clamp a long-running row to zero until the
-          // open effect corrects it a frame later.
-          setNow(Date.now())
-          setOpen(current => !current)
-        }}
-      >
-        {rosterReady && liveRows.length > 0 ? <StateDot state="ongoing" className={css.triggerDot} /> : null}
-        <span className={css.count}>{countLabel}</span>
-        <IconChevronDownOutlineRegular size={12} className={open ? css.triggerOpen : undefined} />
-      </button>
+    <div ref={rootRef} style={{ anchorName }} onKeyDown={onKeyDown}>
+      <Tooltip label={countLabel} disabled={open} delayMs={500} portal side="bottom">
+        <button
+          ref={triggerRef}
+          type="button"
+          className={css.trigger}
+          aria-expanded={open}
+          aria-label={countLabel}
+          aria-describedby={liveRows.length > 0 ? activityId : undefined}
+          onPointerEnter={hoverEnter}
+          onPointerLeave={hoverLeave}
+          onClick={() => { changeOpen(!open || (allowsHoverOpen() && menuState.mode !== 'pinned')) }}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowDown') return
+            event.preventDefault()
+            changeOpen(true)
+            queueMicrotask(() => { menuRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus() })
+          }}
+        >
+          <span className={css.activitySlot} aria-hidden>
+            <IconLayersOutlineRegular size={14} className={liveRows.length > 0 ? css.compactIcon : undefined} />
+            {liveRows.length > 0 && <StateDot state="ongoing" className={css.textModeActivity} />}
+          </span>
+          <span ref={countRef} className={css.count} data-job-count>{countLabel}</span>
+        </button>
+      </Tooltip>
+      {liveRows.length > 0 && <span id={activityId} hidden>{t('section.live')}</span>}
       {open
         ? createPortal(
-          <MenuSurface ref={menuRef} className={css.menu} style={menuPosition ?? MEASURE_STYLE}>
+          <MenuSurface
+            ref={menuRef}
+            className={css.menu}
+            style={{ positionAnchor: anchorName }}
+            onPointerEnter={hoverEnter}
+            onPointerLeave={hoverLeave}
+            onPointerDownCapture={() => { changeOpen(true) }}
+            onFocusCapture={() => { changeOpen(true) }}
+          >
             <ul className={css.menuBody} aria-label={t('list.aria')}>
-              {!rosterReady ? (
-                <li className={css.notice} role={roster.state === 'error' ? 'alert' : 'status'}>
-                  {roster.state === 'error' ? t('roster.failure', { error: roster.error }) : t('roster.loading')}
-                  {jobs.length > 0 ? <span> {t('roster.stale')}</span> : null}
-                  {roster.state === 'error' ? (
+              {liveRows.length > 0
+                ? <li className={css.sectionHeader} aria-hidden="true">{t('section.live')}</li>
+                : null}
+              {liveRows.map(item)}
+              {settledRows.length > 0
+                ? (
+                  <li className={css.sectionHeader}>
                     <button
                       type="button"
-                      className={css.sectionClear}
-                      onClick={() => {
-                        retryRows(sessionId)
-                      }}
+                      className={css.sectionToggle}
+                      aria-expanded={settledExpanded}
+                      onClick={() => { setSettledOpen(!settledExpanded) }}
                     >
-                      {t('roster.retry')}
+                      <IconChevronDownOutlineRegular size={12} className={settledExpanded ? `${css.sectionChevron} ${css.sectionChevronOpen}` : css.sectionChevron} />
+                      {t('section.settledCount', { count: settledRows.length })}
                     </button>
-                  ) : null}
-                </li>
-              ) : null}
-              {liveRows.length > 0 ? (
-                <li className={css.sectionHeader} aria-hidden="true">
-                  {t('section.live')}
-                </li>
-              ) : null}
-              {liveRows.map(item)}
-              {settledRows.length > 0 ? (
-                <li className={css.sectionHeader}>
-                  <button
-                    type="button"
-                    className={css.sectionToggle}
-                    aria-expanded={settledExpanded}
-                    onClick={() => {
-                      setSettledOpen(!settledExpanded)
-                    }}
-                  >
-                    <IconChevronDownOutlineRegular
-                      size={12}
-                      className={
-                        settledExpanded ? `${css.sectionChevron} ${css.sectionChevronOpen}` : css.sectionChevron
-                      }
-                    />
-                    {t('section.settledCount', { count: settledRows.length })}
-                  </button>
-                  <button type="button" className={css.sectionClear} onClick={clearSettled}>
-                    {t('section.clear')}
-                  </button>
-                </li>
-              ) : null}
+                    <button type="button" className={css.sectionClear} onClick={clearSettled}>
+                      {t('section.clear')}
+                    </button>
+                  </li>
+                )
+                : null}
               {settledExpanded ? settledRows.map(item) : null}
             </ul>
           </MenuSurface>,

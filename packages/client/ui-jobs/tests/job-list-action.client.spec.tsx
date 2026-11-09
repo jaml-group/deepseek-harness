@@ -1,14 +1,31 @@
 // @vitest-environment jsdom
-import type { JobRosterState, JobsSnapshot, JobView, ObservedJob } from '@deepseek-ai/dsh-api-job-controller/client'
-import { ClientJobsModel } from '@deepseek-ai/dsh-api-job-controller/src/client/model.ts'
-import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
-import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-ui-renderer/src/client/bind.ts'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { useLayoutEffect } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
+import type { JobsSnapshot, JobView, ObservedJob } from '@deepseek-ai/dsh-api-job-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { JobListAction, type JobListActionProps } from '../src/client/JobListAction.tsx'
-import { zh } from '../src/client/locales.ts'
+import { zh, en, ja, es, fr, de, ru, pt } from '../src/client/locales.ts'
+
+beforeEach(() => {
+  class TooltipObserver implements ResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element): void {
+      const size = { inlineSize: 160, blockSize: 30 }
+      this.callback([{
+        target, borderBoxSize: [size], contentBoxSize: [size], devicePixelContentBoxSize: [size], contentRect: new DOMRect(),
+      }], this)
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  vi.stubGlobal('ResizeObserver', TooltipObserver)
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+})
+
+beforeEach(() => {
+  vi.stubGlobal('CSS', { supports: (property: string) => property === '-webkit-backdrop-filter' })
+})
 
 afterEach(() => {
   cleanup()
@@ -44,32 +61,39 @@ function props(
   observed: Readonly<Record<string, ObservedJob>> = {},
   killJob: JobListActionProps['killJob'] = async () => true,
   watchRows: JobListActionProps['watchRows'] = () => () => {},
-  roster: JobRosterState = { state: 'ready', error: null },
-  retryRows: JobListActionProps['retryRows'] = () => {},
 ): JobListActionProps {
-  const jobsState: JobsSnapshot = {
-    rows: { [SESSION]: jobs },
-    rosterStatus: { [SESSION]: roster },
-    observed,
-  }
+  const jobsState: JobsSnapshot = { rows: jobs.length > 0 ? { [SESSION]: jobs } : {}, observed }
   function useJobs<T>(select: (value: JobsSnapshot) => T): T {
     return select(jobsState)
   }
-  return {
-    sessionId: SESSION,
-    useJobs,
-    readJobs: () => jobsState,
-    watchRows,
-    retryRows,
-    observe,
-    killJob,
-    t,
-  } as JobListActionProps
+  return { sessionId: SESSION, useJobs, watchRows, observe, killJob, t } as JobListActionProps
 }
 
 function openList(): void {
   fireEvent.click(screen.getAllByRole('button')[0]!)
 }
+
+describe('JobListAction count copy', () => {
+  it.each([
+    [zh, '1 个后台任务', '2 个后台任务'],
+    [en, '1 background job', '2 background jobs'],
+    [ja, 'バックグラウンドジョブ 1 件', 'バックグラウンドジョブ 2 件'],
+    [es, 'Tareas en segundo plano: 1', 'Tareas en segundo plano: 2'],
+    [fr, 'Tâches en arrière-plan : 1', 'Tâches en arrière-plan : 2'],
+    [de, 'Hintergrundaufgaben: 1', 'Hintergrundaufgaben: 2'],
+    [ru, 'Фоновые задачи: 1', 'Фоновые задачи: 2'],
+    [pt, 'Tarefas em segundo plano: 1', 'Tarefas em segundo plano: 2'],
+  ] as const)('uses neutral count copy for live and settled jobs in locale %#', (dictionary, one, two) => {
+    const translate: JobListActionProps['t'] = makeTranslate(dictionary)
+    const settled = job({ id: 'settled' as JobView['id'], status: 'completed', finishedAt: 1_700_000_003_000 })
+    const { rerender } = render(<JobListAction {...props([job(), settled])} t={translate} />)
+    expect(screen.getByRole('button', { name: one, description: dictionary['section.live'] })).toBeDefined()
+    rerender(<JobListAction {...props([job({ status: 'stopping' }), settled])} t={translate} />)
+    expect(screen.getByRole('button', { name: one, description: dictionary['section.live'] })).toBeDefined()
+    rerender(<JobListAction {...props([job({ status: 'completed' }), settled])} t={translate} />)
+    expect(screen.getByRole('button', { name: two, description: '' })).toBeDefined()
+  })
+})
 
 describe('JobListAction visibility', () => {
   it('renders nothing while the session sees no jobs', () => {
@@ -88,41 +112,322 @@ describe('JobListAction visibility', () => {
   })
 
   it('counts live jobs on the trigger', () => {
-    render(
-      <JobListAction
-        {...props([outputJob(), job({ id: 'subagent-1' as JobView['id'], kind: 'subagent', label: 'explore' })])}
-      />,
-    )
-    expect(screen.getByRole('button', { name: '2 个后台任务运行中' })).toBeDefined()
+    render(<JobListAction {...props([
+      outputJob(),
+      job({ id: 'subagent-1' as JobView['id'], kind: 'subagent', label: 'explore' }),
+    ])} />)
+    expect(screen.getByRole('button', { name: '2 个后台任务' })).toBeDefined()
+  })
+
+  it('retains the compact Layers icon through running, stopping, and idle states without a root chevron', () => {
+    const { rerender } = render(<JobListAction {...props([job()])} />)
+    const trigger = screen.getByRole('button')
+    expect(trigger.querySelector('[data-icon="dsw-icon-layers-outline-regular"]')).not.toBeNull()
+    expect(trigger.querySelector('[data-state="ongoing"]')).not.toBeNull()
+    expect(trigger.querySelector('[data-icon="dsw-icon-chevron-down-outline-regular"]')).toBeNull()
+    rerender(<JobListAction {...props([job({ status: 'stopping' })])} />)
+    expect(screen.getByRole('button')).toBe(trigger)
+    expect(trigger.querySelector('[data-state="ongoing"]')).not.toBeNull()
+    rerender(<JobListAction {...props([job({ status: 'completed' })])} />)
+    expect(screen.getByRole('button')).toBe(trigger)
+    expect(trigger.querySelector('[data-state="ongoing"]')).toBeNull()
+    const icon = trigger.querySelector('[data-icon="dsw-icon-layers-outline-regular"]')
+    expect(icon?.getAttribute('width')).toBe('14')
+    expect(trigger.querySelectorAll('svg')).toHaveLength(1)
   })
 
   it('falls back to the total when nothing is live', () => {
-    render(<JobListAction {...props([job({ status: 'completed', finishedAt: 1_700_000_003_000 })])} />)
+    render(<JobListAction {...props([
+      job({ status: 'completed', finishedAt: 1_700_000_003_000 }),
+    ])} />)
     expect(screen.getByRole('button', { name: '1 个后台任务' })).toBeDefined()
+  })
+})
+
+describe('JobListAction hover', () => {
+  function pointer(target: Element, type: 'pointerover' | 'pointerout', pointerType = 'mouse'): void {
+    // jsdom lacks PointerEvent; preserve its pointer type on the native event.
+    const event = new MouseEvent(type, { bubbles: true })
+    Object.defineProperty(event, 'pointerType', { value: pointerType })
+    fireEvent(target, event)
+  }
+
+  function advance(ms: number): void {
+    act(() => { vi.advanceTimersByTime(ms) })
+  }
+
+  function hoverOpen(): HTMLElement {
+    const trigger = screen.getByRole('button', { name: '1 个后台任务' })
+    pointer(trigger, 'pointerover')
+    advance(149)
+    expect(screen.queryByRole('list')).toBeNull()
+    advance(1)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    return trigger
+  }
+
+  it('keeps the compact trigger click-only and shows its count tooltip after 500ms', () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    const trigger = screen.getByRole('button')
+    const count = trigger.querySelector<HTMLElement>('[data-job-count]')!
+    count.style.display = 'none'
+    pointer(trigger, 'pointerover')
+    advance(499)
+    expect(screen.queryByRole('list')).toBeNull()
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    advance(1)
+    expect(screen.getByRole('tooltip').textContent).toBe('1 个后台任务')
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    pointer(trigger, 'pointerout')
+    advance(500)
+    expect(screen.getByRole('list')).toBeDefined()
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it('cancels pending wide hover when CSS hides the count and compact clicks close hover-opened lists', () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    const trigger = screen.getByRole('button')
+    const count = trigger.querySelector<HTMLElement>('[data-job-count]')!
+    pointer(trigger, 'pointerover')
+    advance(100)
+    count.style.display = 'none'
+    advance(50)
+    expect(screen.queryByRole('list')).toBeNull()
+    pointer(trigger, 'pointerout')
+    count.style.display = ''
+    hoverOpen()
+    count.style.display = 'none'
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it('shows count on keyboard focus immediately and opens and pins with ArrowDown', async () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    const trigger = screen.getByRole('button')
+    trigger.querySelector<HTMLElement>('[data-job-count]')!.style.display = 'none'
+    fireEvent.keyDown(document.body, { key: 'Tab' })
+    act(() => { trigger.focus() })
+    expect(screen.getByRole('tooltip').textContent).toBe('1 个后台任务')
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    await act(async () => { vi.runAllTicks() })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    const row = screen.getByRole('button', { name: zh['row.expandAria'].replace('{label}', 'pnpm run build') })
+    expect(document.activeElement).toBe(row)
+    pointer(trigger, 'pointerout')
+    advance(120)
+    expect(screen.getByRole('list')).toBeDefined()
+    fireEvent.keyDown(row, { key: 'Escape' })
+    expect(screen.queryByRole('list')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('waits for hover, bridges the portal gap, and closes after leaving both surfaces', () => {
+    vi.useFakeTimers()
+    const observe = vi.fn(() => () => {})
+    const { container } = render(<JobListAction {...props([job()], observe)} />)
+    const trigger = hoverOpen()
+    const menu = screen.getByRole('list').parentElement!
+    expect(container.contains(menu)).toBe(false)
+    expect(observe).not.toHaveBeenCalled()
+    pointer(trigger, 'pointerout')
+    advance(119)
+    pointer(menu, 'pointerover')
+    advance(120)
+    expect(screen.getByRole('list')).toBeDefined()
+    pointer(menu, 'pointerout')
+    advance(119)
+    expect(screen.getByRole('list')).toBeDefined()
+    advance(1)
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it('cancels short hover and preserves a returning pointer during leave grace', () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    const trigger = screen.getByRole('button')
+    pointer(trigger, 'pointerover')
+    advance(149)
+    pointer(trigger, 'pointerout')
+    advance(150)
+    expect(screen.queryByRole('list')).toBeNull()
+    hoverOpen()
+    pointer(trigger, 'pointerout')
+    advance(100)
+    pointer(trigger, 'pointerover')
+    advance(120)
+    expect(screen.getByRole('list')).toBeDefined()
+  })
+
+  it('pins a hover-opened list on click until explicit dismissal', () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    const trigger = hoverOpen()
+    fireEvent.click(trigger)
+    pointer(trigger, 'pointerout')
+    advance(120)
+    expect(screen.getByRole('list')).toBeDefined()
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('list')).toBeNull()
+    hoverOpen()
+    fireEvent.click(trigger)
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('list')).toBeNull()
+    hoverOpen()
+    pointer(trigger, 'pointerout')
+    advance(120)
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it('ignores touch hover while keeping tap usable', () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    const trigger = screen.getByRole('button')
+    pointer(trigger, 'pointerover', 'touch')
+    advance(150)
+    expect(screen.queryByRole('list')).toBeNull()
+    fireEvent.click(trigger)
+    pointer(trigger, 'pointerout', 'touch')
+    advance(120)
+    expect(screen.getByRole('list')).toBeDefined()
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it('pins keyboard focus and releases expanded output on Escape or hover close', () => {
+    vi.useFakeTimers()
+    const stop = vi.fn()
+    const observe = vi.fn(() => stop)
+    render(<JobListAction {...props([outputJob()], observe)} />)
+    const trigger = hoverOpen()
+    pointer(trigger, 'pointerout')
+    act(() => { trigger.focus() })
+    fireEvent.keyDown(trigger, { key: 'Tab' })
+    const row = screen.getByRole('button', { name: zh['row.expandAria'].replace('{label}', 'pnpm run build') })
+    expect(document.activeElement).toBe(row)
+    advance(120)
+    fireEvent.click(row)
+    expect(observe).toHaveBeenCalledTimes(1)
+    fireEvent.keyDown(row, { key: 'Escape' })
+    expect(document.activeElement).toBe(trigger)
+    expect(stop).toHaveBeenCalledTimes(1)
+    hoverOpen()
+    expect(observe).toHaveBeenCalledTimes(2)
+    pointer(trigger, 'pointerout')
+    advance(120)
+    expect(screen.queryByRole('list')).toBeNull()
+    expect(stop).toHaveBeenCalledTimes(2)
+  })
+
+  it('pins pointer interaction so leaving cannot interrupt stop confirmation', () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    const trigger = hoverOpen()
+    pointer(trigger, 'pointerout')
+    const stop = screen.getByTitle(zh['kill.stop'].replace('{label}', 'pnpm run build'))
+    fireEvent.pointerDown(stop)
+    fireEvent.click(stop)
+    pointer(screen.getByRole('list').parentElement!, 'pointerout')
+    advance(120)
+    expect(stop.getAttribute('data-kill-state')).toBe('armed')
+    expect(screen.getByRole('list')).toBeDefined()
+  })
+
+  it('dismisses a hover-opened list with Escape while focus is elsewhere', () => {
+    vi.useFakeTimers()
+    render(<JobListAction {...props([job()])} />)
+    hoverOpen()
+    fireEvent.keyDown(document.body, { key: 'a' })
+    expect(screen.getByRole('list')).toBeDefined()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it.each(['opening', 'closing'] as const)('cleans up a pending %s timer on unmount', (phase) => {
+    vi.useFakeTimers()
+    const { unmount } = render(<JobListAction {...props([job()])} />)
+    const trigger = screen.getByRole('button')
+    pointer(trigger, 'pointerover')
+    if (phase === 'closing') {
+      advance(150)
+      pointer(trigger, 'pointerout')
+    }
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    advance(150)
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it('releases expanded output and pending hover close before showing another session', () => {
+    vi.useFakeTimers()
+    const stop = vi.fn()
+    const observe = vi.fn(() => stop)
+    const first = props([outputJob()], observe)
+    const { rerender } = render(<JobListAction {...first} />)
+    const trigger = hoverOpen()
+    const row = screen.getByRole('button', { name: zh['row.expandAria'].replace('{label}', 'pnpm run build') })
+    fireEvent.click(row)
+    expect(observe).toHaveBeenCalledTimes(1)
+    pointer(trigger, 'pointerout')
+    const nextId = 'next-session' as SessionId
+    rerender(<JobListAction
+      {...first}
+      sessionId={nextId}
+      useJobs={select => select({ rows: { [nextId]: [outputJob()] }, observed: {} })}
+    />)
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(observe).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+    hoverOpen()
+    advance(120)
+    expect(screen.getByRole('list')).toBeDefined()
+    expect(observe).toHaveBeenLastCalledWith(nextId, 'bash-1')
+  })
+
+  it('cancels pending hover and clears pins on session change or an empty roster', () => {
+    vi.useFakeTimers()
+    const first = props([job()])
+    const nextId = 'next-session' as SessionId
+    const next: JobListActionProps = {
+      ...first,
+      sessionId: nextId,
+      useJobs: select => select({ rows: { [nextId]: [job()] }, observed: {} }),
+    }
+    const { rerender } = render(<JobListAction {...first} />)
+    pointer(screen.getByRole('button'), 'pointerover')
+    rerender(<JobListAction {...next} />)
+    advance(150)
+    expect(screen.queryByRole('list')).toBeNull()
+    const trigger = hoverOpen()
+    fireEvent.click(trigger)
+    rerender(<JobListAction {...first} />)
+    expect(screen.queryByRole('list')).toBeNull()
+    pointer(screen.getByRole('button'), 'pointerover')
+    rerender(<JobListAction {...props([])} />)
+    advance(150)
+    expect(vi.getTimerCount()).toBe(0)
+    rerender(<JobListAction {...first} />)
+    hoverOpen()
+    fireEvent.click(screen.getByRole('button', { name: '1 个后台任务' }))
+    rerender(<JobListAction {...props([])} />)
+    rerender(<JobListAction {...first} />)
+    expect(screen.queryByRole('list')).toBeNull()
   })
 })
 
 describe('JobListAction rows', () => {
   it('renders a settled job without retained output as a static row', () => {
-    render(
-      <JobListAction
-        {...props([
-          job({
-            id: 'subagent-1' as JobView['id'],
-            kind: 'subagent',
-            label: 'explore the repo',
-            status: 'completed',
-            finishedAt: 1_700_000_003_000,
-          }),
-        ])}
-      />,
-    )
+    render(<JobListAction {...props([
+      job({ id: 'subagent-1' as JobView['id'], kind: 'subagent', label: 'explore the repo', status: 'completed', finishedAt: 1_700_000_003_000 }),
+    ])} />)
     expect(screen.getByRole('button', { name: '1 个后台任务' })).toBeDefined()
     openList()
     expect(screen.getByText('explore the repo')).toBeDefined()
-    expect(
-      screen.queryByRole('button', { name: zh['row.expandAria'].replace('{label}', 'explore the repo') }),
-    ).toBeNull()
+    expect(screen.queryByRole('button', { name: zh['row.expandAria'].replace('{label}', 'explore the repo') })).toBeNull()
   })
 
   it('offers a panel on a live row before any output arrived', () => {
@@ -140,12 +445,10 @@ describe('JobListAction rows', () => {
   })
 
   it('folds the settled tail behind its count while live work exists, and clears on demand', () => {
-    const settled = [
-      job({ id: 'bash-2' as JobView['id'], label: 'settled work', status: 'completed', finishedAt: 1_700_000_012_000 }),
-    ]
+    const settled = [job({ id: 'bash-2' as JobView['id'], label: 'settled work', status: 'completed', finishedAt: 1_700_000_012_000 })]
     render(<JobListAction {...props([job(), ...settled])} />)
     openList()
-    expect(screen.getByText(zh['section.live'])).toBeDefined()
+    expect(screen.getByText(zh['section.live'], { selector: 'li' })).toBeDefined()
     const toggle = screen.getByRole('button', { name: zh['section.settledCount'].replace('{count}', '1') })
     // Folded by default while something runs; the toggle expands it.
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
@@ -159,33 +462,20 @@ describe('JobListAction rows', () => {
   })
 
   it('opens the settled tail by default when nothing is live', () => {
-    render(<JobListAction {...props([job({ status: 'completed', finishedAt: 1_700_000_012_000 })])} />)
+    render(<JobListAction {...props([
+      job({ status: 'completed', finishedAt: 1_700_000_012_000 }),
+    ])} />)
     openList()
     expect(screen.getByText('pnpm run build')).toBeDefined()
-    expect(
-      screen
-        .getByRole('button', { name: zh['section.settledCount'].replace('{count}', '1') })
-        .getAttribute('aria-expanded'),
-    ).toBe('true')
+    expect(screen.getByRole('button', { name: zh['section.settledCount'].replace('{count}', '1') }).getAttribute('aria-expanded')).toBe('true')
   })
 
   it('clearing drops an expanded settled panel with its rows', () => {
     const observe = vi.fn(() => () => {})
-    render(
-      <JobListAction
-        {...props(
-          [
-            outputJob({
-              id: 'bash-2' as JobView['id'],
-              label: 'settled work',
-              status: 'completed',
-              finishedAt: 1_700_000_012_000,
-            }),
-          ],
-          observe,
-        )}
-      />,
-    )
+    render(<JobListAction {...props(
+      [outputJob({ id: 'bash-2' as JobView['id'], label: 'settled work', status: 'completed', finishedAt: 1_700_000_012_000 })],
+      observe,
+    )} />)
     openList()
     // Nothing live: the tail is open; expand the settled row's output panel.
     fireEvent.click(screen.getByRole('button', { name: zh['row.expandAria'].replace('{label}', 'settled work') }))
@@ -197,57 +487,27 @@ describe('JobListAction rows', () => {
 
   it('shows a settled duration and ticks a live one', () => {
     vi.useFakeTimers({ now: 1_700_000_020_000 })
-    render(
-      <JobListAction
-        {...props([
-          job({ startedAt: 1_700_000_015_000 }),
-          job({
-            id: 'bash-2' as JobView['id'],
-            status: 'completed',
-            startedAt: 1_700_000_000_000,
-            finishedAt: 1_700_000_012_000,
-          }),
-          job({
-            id: 'bash-3' as JobView['id'],
-            status: 'completed',
-            startedAt: 1_699_996_200_000,
-            finishedAt: 1_700_000_000_000,
-          }),
-          job({
-            id: 'bash-4' as JobView['id'],
-            status: 'completed',
-            startedAt: 1_699_999_900_000,
-            finishedAt: 1_699_999_972_000,
-          }),
-        ])}
-      />,
-    )
+    render(<JobListAction {...props([
+      job({ startedAt: 1_700_000_015_000 }),
+      job({ id: 'bash-2' as JobView['id'], status: 'completed', startedAt: 1_700_000_000_000, finishedAt: 1_700_000_012_000 }),
+      job({ id: 'bash-3' as JobView['id'], status: 'completed', startedAt: 1_699_996_200_000, finishedAt: 1_700_000_000_000 }),
+      job({ id: 'bash-4' as JobView['id'], status: 'completed', startedAt: 1_699_999_900_000, finishedAt: 1_699_999_972_000 }),
+    ])} />)
     openList()
     fireEvent.click(screen.getByRole('button', { name: zh['section.settledCount'].replace('{count}', '3') }))
     expect(screen.getByText('5秒')).toBeDefined()
     expect(screen.getByText('12秒')).toBeDefined()
     expect(screen.getByText('1小时3分')).toBeDefined()
     expect(screen.getByText('1分12秒')).toBeDefined()
-    act(() => {
-      vi.advanceTimersByTime(1_000)
-    })
+    act(() => { vi.advanceTimersByTime(1_000) })
     expect(screen.getByText('6秒')).toBeDefined()
   })
 
   it('lists rows with kind, label, and detail-or-status', () => {
-    render(
-      <JobListAction
-        {...props([
-          outputJob(),
-          outputJob({
-            id: 'bash-2' as JobView['id'],
-            status: 'failed',
-            detail: 'exit code: 3',
-            finishedAt: 1_700_000_002_000,
-          }),
-        ])}
-      />,
-    )
+    render(<JobListAction {...props([
+      outputJob(),
+      outputJob({ id: 'bash-2' as JobView['id'], status: 'failed', detail: 'exit code: 3', finishedAt: 1_700_000_002_000 }),
+    ])} />)
     openList()
     fireEvent.click(screen.getByRole('button', { name: zh['section.settledCount'].replace('{count}', '1') }))
     const list = screen.getByRole('list', { name: zh['list.aria'] })
@@ -268,91 +528,62 @@ describe('JobListAction rows', () => {
         label,
         status: 'completed',
         startedAt,
-        ...(finishedAt !== undefined ? { finishedAt } : {}),
+        ...finishedAt !== undefined ? { finishedAt } : {},
       })
-    render(
-      <JobListAction
-        {...props([
-          settled('bash-a', 'settled-a', 10, 100),
-          settled('bash-c', 'settled-c', 80, 100),
-          settled('bash-b', 'settled-b', 90),
-          settled('bash-e', 'settled-e', 95, 50),
-          settled('bash-d', 'settled-d', 10, 200),
-          job({ id: 'bash-l1' as JobView['id'], label: 'live-1', startedAt: 5 }),
-          job({ id: 'bash-l2' as JobView['id'], label: 'live-2', startedAt: 3 }),
-        ])}
-      />,
-    )
+    render(<JobListAction {...props([
+      settled('bash-a', 'settled-a', 10, 100),
+      settled('bash-c', 'settled-c', 80, 100),
+      settled('bash-b', 'settled-b', 90),
+      settled('bash-e', 'settled-e', 95, 50),
+      settled('bash-d', 'settled-d', 10, 200),
+      job({ id: 'bash-l1' as JobView['id'], label: 'live-1', startedAt: 5 }),
+      job({ id: 'bash-l2' as JobView['id'], label: 'live-2', startedAt: 3 }),
+    ])} />)
     openList()
     fireEvent.click(screen.getByRole('button', { name: zh['section.settledCount'].replace('{count}', '5') }))
     const labels = within(screen.getByRole('list', { name: zh['list.aria'] }))
       .getAllByRole('listitem')
       .map(item => item.querySelector('[title]')?.getAttribute('title'))
       .filter((title): title is string => title != null && !title.startsWith('已运行') && !title.startsWith('耗时'))
-    expect(labels).toEqual(['live-2', 'live-1', 'settled-d', 'settled-a', 'settled-c', 'settled-b', 'settled-e'])
+    expect(labels).toEqual([
+      'live-2', 'live-1', 'settled-d', 'settled-a', 'settled-c', 'settled-b', 'settled-e',
+    ])
     expect(screen.getAllByText(zh['status.completed']).length).toBeGreaterThan(0)
   })
 
   it('breaks a settled tie on start order so map iteration never decides it', () => {
-    render(
-      <JobListAction
-        {...props([
-          job({
-            id: 'bash-2' as JobView['id'],
-            label: 'second',
-            status: 'completed',
-            startedAt: 1_700_000_000_000 + 10,
-            finishedAt: 1_700_000_000_000 + 100,
-          }),
-          job({
-            id: 'bash-1' as JobView['id'],
-            label: 'first',
-            status: 'completed',
-            startedAt: 1_700_000_000_000,
-            finishedAt: 1_700_000_000_000 + 100,
-          }),
-        ])}
-      />,
-    )
+    render(<JobListAction {...props([
+      job({ id: 'bash-2' as JobView['id'], label: 'second', status: 'completed', startedAt: 1_700_000_000_000 + 10, finishedAt: 1_700_000_000_000 + 100 }),
+      job({ id: 'bash-1' as JobView['id'], label: 'first', status: 'completed', startedAt: 1_700_000_000_000, finishedAt: 1_700_000_000_000 + 100 }),
+    ])} />)
     openList()
-    expect(
-      within(screen.getByRole('list'))
-        .getAllByRole('listitem')
-        .map(row => row.querySelector('[title]')?.getAttribute('title'))
-        .filter(title => title !== undefined),
-    ).toEqual(['first', 'second'])
+    expect(within(screen.getByRole('list')).getAllByRole('listitem').map(row => row.querySelector('[title]')?.getAttribute('title')).filter(title => title !== undefined))
+      .toEqual(['first', 'second'])
   })
 
   it('prefers the producer detail over the generic status word', () => {
-    render(
-      <JobListAction
-        {...props([job({ status: 'killed', detail: 'signal: SIGTERM', finishedAt: 1_700_000_000_000 + 2_000 })])}
-      />,
-    )
+    render(<JobListAction {...props([
+      job({ status: 'killed', detail: 'signal: SIGTERM', finishedAt: 1_700_000_000_000 + 2_000 }),
+    ])} />)
     openList()
     expect(within(screen.getByRole('list')).getByText('signal: SIGTERM')).toBeDefined()
   })
 
   it('renders settled status words and every lifecycle indicator', () => {
-    render(
-      <JobListAction
-        {...props([
-          job({ id: 'bash-1' as JobView['id'], label: 'a', status: 'running' }),
-          job({ id: 'bash-2' as JobView['id'], label: 'b', status: 'stopping' }),
-          job({ id: 'bash-3' as JobView['id'], label: 'c', status: 'completed', finishedAt: 1_700_000_000_000 }),
-          job({ id: 'bash-4' as JobView['id'], label: 'd', status: 'killed', finishedAt: 1_700_000_000_000 }),
-          job({ id: 'bash-5' as JobView['id'], label: 'e', status: 'failed', finishedAt: 1_700_000_000_000 }),
-        ])}
-      />,
-    )
+    render(<JobListAction {...props([
+      job({ id: 'bash-1' as JobView['id'], label: 'a', status: 'running' }),
+      job({ id: 'bash-2' as JobView['id'], label: 'b', status: 'stopping' }),
+      job({ id: 'bash-3' as JobView['id'], label: 'c', status: 'completed', finishedAt: 1_700_000_000_000 }),
+      job({ id: 'bash-4' as JobView['id'], label: 'd', status: 'killed', finishedAt: 1_700_000_000_000 }),
+      job({ id: 'bash-5' as JobView['id'], label: 'e', status: 'failed', finishedAt: 1_700_000_000_000 }),
+    ])} />)
     openList()
     fireEvent.click(screen.getByRole('button', { name: zh['section.settledCount'].replace('{count}', '3') }))
     for (const word of ['已完成', '已取消', '已失败']) {
       expect(within(screen.getByRole('list')).getByText(word)).toBeDefined()
     }
-    expect(
-      [...screen.getByRole('list').querySelectorAll('li [data-state]')].map(node => node.getAttribute('data-state')),
-    ).toEqual(['ongoing', 'warning', 'done', 'warning', 'error'])
+    expect([...screen.getByRole('list').querySelectorAll('li [data-state]')].map(node => node.getAttribute('data-state')))
+      .toEqual(['ongoing', 'warning', 'done', 'warning', 'error'])
   })
 })
 
@@ -367,11 +598,11 @@ describe('JobListAction observation', () => {
       gapBefore: false,
       streaming: false,
     }
-    render(
-      <JobListAction
-        {...props([outputJob({ status: 'killed', finishedAt: 1_700_000_001_000 })], undefined, { 'bash-1': view })}
-      />,
-    )
+    render(<JobListAction {...props(
+      [outputJob({ status: 'killed', finishedAt: 1_700_000_001_000 })],
+      undefined,
+      { 'bash-1': view },
+    )} />)
     openList()
     expect(screen.getByText(zh['status.killed'])).toBeDefined()
     fireEvent.click(screen.getByRole('button', { name: zh['row.expandAria'].replace('{label}', 'pnpm run build') }))
@@ -382,58 +613,71 @@ describe('JobListAction observation', () => {
     // The panel draws no state dot or label of its own — the row carries it.
     expect(screen.queryByText(zh['terminal.done'])).toBeNull()
     // The copy control carries the command, not the output.
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: zh['terminal.copy'] }))
-    })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh['terminal.copy'] })) })
     expect(writeText).toHaveBeenCalledWith('pnpm run build')
   })
 
-  it('anchors the portaled list in viewport coordinates and follows resize and ancestor scroll', () => {
-    vi.stubGlobal('innerWidth', 700)
-    vi.stubGlobal('innerHeight', 600)
-    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(440)
-    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(120)
+  it('anchors the portaled list with CSS without reading geometry on resize or ancestor scroll', () => {
     const { container } = render(<JobListAction {...props([outputJob()])} />)
-    const trigger = screen.getByRole('button', { name: '1 个后台任务运行中' })
-    const anchor = vi
-      .spyOn(trigger.parentElement!, 'getBoundingClientRect')
-      .mockReturnValue(new DOMRect(344, 40, 180, 28))
+    const trigger = screen.getByRole('button', { name: '1 个后台任务' })
+    const anchor = trigger.closest('div')!
+    const measure = vi.spyOn(anchor, 'getBoundingClientRect')
     fireEvent.click(trigger)
     const list = screen.getByRole('list', { name: zh['list.aria'] })
-    const menu = list.closest<HTMLElement>('[data-menu-material]')
-    expect(menu?.parentElement).toBe(document.body)
+    const menu = list.closest<HTMLElement>('[data-menu-material]')!
+    expect(menu.parentElement).toBe(document.body)
     expect(container.contains(list)).toBe(false)
-    expect(menu?.style.left).toBe('248px')
-    expect(menu?.style.top).toBe('73px')
-
-    vi.stubGlobal('innerWidth', 900)
+    expect(anchor.style.anchorName).not.toBe('')
+    expect(menu.style.positionAnchor).toBe(anchor.style.anchorName)
+    expect(menu.style.left).toBe('')
+    expect(menu.style.top).toBe('')
     fireEvent(window, new Event('resize'))
-    expect(menu?.style.left).toBe('344px')
-    anchor.mockReturnValue(new DOMRect(80, 110, 180, 28))
     fireEvent.scroll(container)
-    expect(menu?.style.left).toBe('80px')
-    expect(menu?.style.top).toBe('143px')
+    expect(menu.style.positionAnchor).toBe(anchor.style.anchorName)
+    expect(measure).not.toHaveBeenCalled()
   })
 
-  it('keeps a near-edge anchored list inside both viewport margins', () => {
-    vi.stubGlobal('innerWidth', 700)
-    vi.stubGlobal('innerHeight', 600)
-    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(600)
-    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(120)
+  it('gives independent job controls separate CSS anchors', () => {
+    render(<><JobListAction {...props([outputJob()])} /><JobListAction {...props([outputJob()])} /></>)
+    const triggers = screen.getAllByRole('button', { name: '1 个后台任务' })
+    const first = triggers[0]!.closest('div')!
+    const second = triggers[1]!.closest('div')!
+    expect(first.style.anchorName).not.toBe('')
+    expect(second.style.anchorName).not.toBe('')
+    expect(first.style.anchorName).not.toBe(second.style.anchorName)
+  })
+
+  it('keeps visual viewport changes out of inline placement and closes normally', () => {
+    const viewport = Object.assign(new EventTarget(), { width: 600, height: 500, offsetLeft: 40, offsetTop: 60 })
+    vi.stubGlobal('visualViewport', viewport)
+    const listen = vi.spyOn(viewport, 'addEventListener')
     render(<JobListAction {...props([outputJob()])} />)
-    const trigger = screen.getByRole('button', { name: '1 个后台任务运行中' })
-    vi.spyOn(trigger.parentElement!, 'getBoundingClientRect').mockReturnValue(new DOMRect(4, 540, 180, 28))
+    const trigger = screen.getByRole('button', { name: '1 个后台任务' })
     fireEvent.click(trigger)
-    const menu = screen.getByRole('list', { name: zh['list.aria'] }).closest<HTMLElement>('[data-menu-material]')
-    expect(menu?.style.left).toBe('12px')
-    expect(menu?.style.top).toBe('468px')
+    const menu = screen.getByRole('list', { name: zh['list.aria'] }).closest<HTMLElement>('[data-menu-material]')!
+    const placement = menu.style.positionAnchor
+    act(() => {
+      viewport.offsetLeft = 100
+      viewport.offsetTop = 120
+      viewport.dispatchEvent(new Event('scroll'))
+      viewport.height = 200
+      viewport.dispatchEvent(new Event('resize'))
+    })
+    expect(menu.style.positionAnchor).toBe(placement)
+    expect(menu.style.left).toBe('')
+    expect(menu.style.top).toBe('')
+    expect(menu.style.getPropertyValue('--dsh-anchored-max-width')).toBe('')
+    expect(menu.style.getPropertyValue('--dsh-anchored-max-height')).toBe('')
+    expect(listen).not.toHaveBeenCalled()
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('list', { name: zh['list.aria'] })).toBeNull()
   })
 
   it('keeps portaled controls interactive and releases observation on dismissal and unmount', () => {
     const stop = vi.fn()
     const observe = vi.fn(() => stop)
     const { container, unmount } = render(<JobListAction {...props([outputJob()], observe)} />)
-    const trigger = screen.getByRole('button', { name: '1 个后台任务运行中' })
+    const trigger = screen.getByRole('button', { name: '1 个后台任务' })
     trigger.focus()
     fireEvent.click(trigger)
     const list = screen.getByRole('list', { name: zh['list.aria'] })
@@ -589,14 +833,10 @@ describe('JobListAction human kill', () => {
   const stopTitle = (label: string): string => zh['kill.stop'].replace('{label}', label)
 
   it('offers the stop control only on running rows', () => {
-    render(
-      <JobListAction
-        {...props([
-          job(),
-          job({ id: 'bash-2' as JobView['id'], label: 'done', status: 'completed', finishedAt: 1_700_000_100_000 }),
-        ])}
-      />,
-    )
+    render(<JobListAction {...props([
+      job(),
+      job({ id: 'bash-2' as JobView['id'], label: 'done', status: 'completed', finishedAt: 1_700_000_100_000 }),
+    ])} />)
     openList()
     expect(screen.getByTitle(stopTitle('pnpm run build'))).toBeDefined()
     expect(screen.queryByTitle(stopTitle('done'))).toBeNull()
@@ -613,9 +853,7 @@ describe('JobListAction human kill', () => {
     expect(screen.getByTitle(zh['kill.confirm'])).toBe(stop)
     // The armed step is legible without hover: the button carries the label.
     expect(stop.textContent).toBe(zh['kill.confirmAction'])
-    await act(async () => {
-      fireEvent.click(stop)
-    })
+    await act(async () => { fireEvent.click(stop) })
     expect(killJob).toHaveBeenCalledWith(SESSION, 'bash-1')
     // An admitted kill stays pending: the unary response and the jobs frames
     // have no cross-carrier ordering, so only the authoritative frame (the row
@@ -632,9 +870,7 @@ describe('JobListAction human kill', () => {
     const stop = screen.getByTitle(stopTitle('pnpm run build'))
     fireEvent.click(stop)
     expect(stop.getAttribute('data-kill-state')).toBe('armed')
-    act(() => {
-      vi.advanceTimersByTime(3_000)
-    })
+    act(() => { vi.advanceTimersByTime(3_000) })
     expect(stop.getAttribute('data-kill-state')).toBe('idle')
     expect(killJob).not.toHaveBeenCalled()
   })
@@ -647,19 +883,18 @@ describe('JobListAction human kill', () => {
     openList()
     const stop = screen.getByTitle(stopTitle('pnpm run build'))
     fireEvent.click(stop)
-    await act(async () => {
-      fireEvent.click(stop)
-    })
+    await act(async () => { fireEvent.click(stop) })
     expect(stop.getAttribute('data-kill-state')).toBe('failed')
     expect(screen.getByTitle(zh['kill.failed'])).toBe(stop)
-    act(() => {
-      vi.advanceTimersByTime(4_000)
-    })
+    act(() => { vi.advanceTimersByTime(4_000) })
     expect(stop.getAttribute('data-kill-state')).toBe('idle')
   })
 
   it('arming a second row disarms the first', () => {
-    render(<JobListAction {...props([job(), job({ id: 'bash-2' as JobView['id'], label: 'pnpm run watch' })])} />)
+    render(<JobListAction {...props([
+      job(),
+      job({ id: 'bash-2' as JobView['id'], label: 'pnpm run watch' }),
+    ])} />)
     openList()
     const first = screen.getByTitle(stopTitle('pnpm run build'))
     fireEvent.click(first)
@@ -672,17 +907,11 @@ describe('JobListAction human kill', () => {
 
   it('a kill resolving after another row armed leaves the newer phase alone', async () => {
     let resolveKill!: (ok: boolean) => void
-    const killJob = vi.fn(
-      () =>
-        new Promise<boolean>((resolve) => {
-          resolveKill = resolve
-        }),
-    )
-    render(
-      <JobListAction
-        {...props([job(), job({ id: 'bash-2' as JobView['id'], label: 'pnpm run watch' })], undefined, {}, killJob)}
-      />,
-    )
+    const killJob = vi.fn(() => new Promise<boolean>((resolve) => { resolveKill = resolve }))
+    render(<JobListAction {...props([
+      job(),
+      job({ id: 'bash-2' as JobView['id'], label: 'pnpm run watch' }),
+    ], undefined, {}, killJob)} />)
     openList()
     const first = screen.getByTitle(stopTitle('pnpm run build'))
     fireEvent.click(first)
@@ -693,9 +922,7 @@ describe('JobListAction human kill', () => {
     const second = screen.getByTitle(stopTitle('pnpm run watch'))
     fireEvent.click(second)
     expect(second.getAttribute('data-kill-state')).toBe('armed')
-    await act(async () => {
-      resolveKill(false)
-    })
+    await act(async () => { resolveKill(false) })
     expect(second.getAttribute('data-kill-state')).toBe('armed')
     expect(first.getAttribute('data-kill-state')).toBe('idle')
   })
@@ -713,193 +940,11 @@ describe('JobListAction human kill', () => {
   })
 })
 
-describe('JobListAction roster readiness', () => {
-  it('leaves Tab to the browser while an empty roster is loading or retrying', () => {
-    const retry = vi.fn()
-    const watch = vi.fn(() => () => {})
-    const loading = props([], undefined, {}, undefined, watch, { state: 'loading', error: null }, retry)
-    const { rerender } = render(<JobListAction {...loading} />)
-    openList()
-    const trigger = screen.getByRole('button', { name: zh['roster.loading'] })
-    trigger.focus()
-    expect(within(screen.getByRole('list')).queryAllByRole('button')).toEqual([])
-    expect(fireEvent.keyDown(trigger, { key: 'Tab' })).toBe(true)
-    expect(fireEvent.keyDown(trigger, { key: 'Tab', shiftKey: true })).toBe(true)
-
-    rerender(
-      <JobListAction
-        {...props([], undefined, {}, undefined, watch, { state: 'error', error: 'roster denied' }, retry)}
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: zh['roster.retry'] }))
-    expect(retry).toHaveBeenCalledExactlyOnceWith(SESSION)
-    rerender(<JobListAction {...loading} />)
-    trigger.focus()
-    expect(within(screen.getByRole('list')).queryAllByRole('button')).toEqual([])
-    expect(fireEvent.keyDown(trigger, { key: 'Tab' })).toBe(true)
-    expect(fireEvent.keyDown(trigger, { key: 'Tab', shiftKey: true })).toBe(true)
-  })
-
-  it('shows opening and failed empty rosters with a retry instead of a confirmed-empty control', () => {
-    const retry = vi.fn()
-    const watch = vi.fn(() => () => {})
-    const { rerender } = render(
-      <JobListAction {...props([], undefined, {}, undefined, watch, { state: 'loading', error: null }, retry)} />,
-    )
-    openList()
-    expect(screen.getByRole('status').textContent).toContain(zh['roster.loading'])
-    expect(screen.queryByText(zh['roster.retry'])).toBeNull()
-    rerender(
-      <JobListAction
-        {...props([], undefined, {}, undefined, watch, { state: 'error', error: 'roster denied' }, retry)}
-      />,
-    )
-    expect(screen.getByRole('alert').textContent).toContain('roster denied')
-    fireEvent.click(screen.getByRole('button', { name: zh['roster.retry'] }))
-    expect(retry).toHaveBeenCalledExactlyOnceWith(SESSION)
-    expect(watch).toHaveBeenCalledTimes(1)
-    rerender(<JobListAction {...props([], undefined, {}, undefined, watch)} />)
-    expect(screen.queryByRole('list')).toBeNull()
-  })
-
-  it('keeps stale rows and expanded output while disabling Stop and disarming confirmation', () => {
-    const jobs = [outputJob()]
-    const observed = { 'bash-1': { jobId: jobs[0]!.id, text: 'retained output', gapBefore: false, streaming: true } }
-    const stopObservation = vi.fn()
-    const observe = vi.fn(() => stopObservation)
-    const watch = vi.fn(() => () => {})
-    const kill = vi.fn(async () => true)
-    const { rerender } = render(<JobListAction {...props(jobs, observe, observed, kill, watch)} />)
-    openList()
-    fireEvent.click(screen.getByRole('button', { name: zh['row.expandAria'].replace('{label}', jobs[0]!.label) }))
-    fireEvent.click(screen.getByRole('button', { name: zh['kill.stop'].replace('{label}', jobs[0]!.label) }))
-    rerender(<JobListAction {...props(jobs, observe, observed, kill, watch, { state: 'loading', error: null })} />)
-    expect(screen.getByRole('status').textContent).toContain(zh['roster.stale'])
-    expect(screen.getByText('retained output')).toBeDefined()
-    expect(screen.queryByRole('button', { name: zh['kill.confirmAction'] })).toBeNull()
-    expect(screen.queryByRole('button', { name: zh['kill.stop'].replace('{label}', jobs[0]!.label) })).toBeNull()
-    expect(observe).toHaveBeenCalledTimes(1)
-    expect(stopObservation).not.toHaveBeenCalled()
-    rerender(
-      <JobListAction
-        {...props(jobs, observe, observed, kill, watch, { state: 'error', error: 'connection failed' })}
-      />,
-    )
-    expect(screen.getByRole('alert').textContent).toContain('connection failed')
-    expect(screen.getByText('retained output')).toBeDefined()
-    expect(kill).not.toHaveBeenCalled()
-    rerender(<JobListAction {...props(jobs, observe, observed, kill, watch)} />)
-    fireEvent.click(screen.getByRole('button', { name: zh['kill.stop'].replace('{label}', jobs[0]!.label) }))
-    expect(kill).not.toHaveBeenCalled()
-    expect(watch).toHaveBeenCalledTimes(1)
-  })
-})
-
-it('renders no roster control before the first watch publishes readiness', () => {
-  const original = props([])
-  const source: JobsSnapshot = { rows: {}, rosterStatus: {}, observed: {} }
-  const { container } = render(<JobListAction {...original} useJobs={select => select(source)} />)
-  expect(container.innerHTML).toBe('')
-})
-
-/** Bind the shipping model through the real renderer hook and live action read. */
-function liveProps(model: ClientJobsModel, kill: JobListActionProps['killJob']): JobListActionProps {
-  return {
-    ...props(model.getSnapshot().rows[SESSION] ?? [], undefined, {}, kill),
-    useJobs: bindSnapshotSelector(model),
-    readJobs: () => model.getSnapshot(),
-  }
-}
-
-it('refuses an armed Stop after readiness is lost before renderer publication', () => {
-  const model = new ClientJobsModel()
-  model.rowsReplaced(SESSION, [job()])
-  const kill = vi.fn(async () => true)
-  render(<JobListAction {...liveProps(model, kill)} />)
-  openList()
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  const confirm = document.querySelector('[data-kill-state]')!
-  act(() => {
-    model.rowsLoading(SESSION)
-    fireEvent.click(confirm)
-  })
-  expect(kill).not.toHaveBeenCalled()
-})
-
-it('requires a fresh first press after readiness loss and recovery within one renderer batch', () => {
-  const model = new ClientJobsModel()
-  model.rowsReplaced(SESSION, [job()])
-  const kill = vi.fn(async () => true)
-  render(<JobListAction {...liveProps(model, kill)} />)
-  openList()
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  act(() => {
-    model.rowsLoading(SESSION)
-    model.rowsReplaced(SESSION, [job()])
-  })
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  expect(kill).not.toHaveBeenCalled()
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  expect(kill).toHaveBeenCalledExactlyOnceWith(SESSION, 'bash-1')
-})
-
-it('requires a fresh first press after recovery commits before passive confirmation cleanup', () => {
-  const model = new ClientJobsModel()
-  model.rowsReplaced(SESSION, [job()])
-  const kill = vi.fn(async () => true)
-  const source = liveProps(model, kill)
-  let clickOnCommit = false
-  function CommitClick() {
-    const roster = source.useJobs(state => state.rosterStatus[SESSION])
-    useLayoutEffect(() => {
-      if (clickOnCommit) {
-        clickOnCommit = false
-        document.querySelector<HTMLButtonElement>('[data-kill-state]')!.click()
-      }
-    }, [roster])
-    return <JobListAction {...source} />
-  }
-  render(<CommitClick />)
-  openList()
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  clickOnCommit = true
-  act(() => {
-    model.rowsLoading(SESSION)
-    model.rowsReplaced(SESSION, [job()])
-  })
-  expect(kill).not.toHaveBeenCalled()
-})
-
-it.each([
-  { replacement: [] },
-  { replacement: [job({ status: 'stopping' })] },
-  { replacement: [job({ owner: 'other' as SessionId })] },
-  { replacement: [job({ startedAt: 2 })] },
-])('refuses a retired running row before its replacement renders: %j', ({ replacement }) => {
-  const model = new ClientJobsModel()
-  model.rowsReplaced(SESSION, [job()])
-  const kill = vi.fn(async () => true)
-  render(<JobListAction {...liveProps(model, kill)} />)
-  openList()
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  const confirm = document.querySelector('[data-kill-state]')!
-  act(() => {
-    model.rowsReplaced(SESSION, replacement)
-    fireEvent.click(confirm)
-  })
-  expect(kill).not.toHaveBeenCalled()
-})
-
-it('keeps a deliberate Stop confirmation across ordinary ready roster progress frames', () => {
-  const model = new ClientJobsModel()
-  model.rowsReplaced(SESSION, [job()])
-  const kill = vi.fn(async () => true)
-  render(<JobListAction {...liveProps(model, kill)} />)
-  openList()
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  act(() => {
-    model.rowsReplaced(SESSION, [job({ progress: 'still running' })])
-  })
-  fireEvent.click(document.querySelector('[data-kill-state]')!)
-  expect(kill).toHaveBeenCalledExactlyOnceWith(SESSION, 'bash-1')
+it.each([1, 2, 5, 21])('renders count-independent Russian labels for %i jobs', (count) => {
+  const jobs = Array.from({ length: count }, (_, i) => job({ id: `job-${i}` as JobView['id'] }))
+  const translate: JobListActionProps['t'] = makeTranslate(ru)
+  const view = render(<JobListAction {...props(jobs)} t={translate} />)
+  expect(screen.getByRole('button', { name: `Фоновые задачи: ${count}` })).toBeDefined()
+  view.rerender(<JobListAction {...props(jobs.map(item => ({ ...item, status: 'completed', finishedAt: 1_700_000_003_000 })))} t={translate} />)
+  expect(screen.getByRole('button', { name: `Фоновые задачи: ${count}` })).toBeDefined()
 })

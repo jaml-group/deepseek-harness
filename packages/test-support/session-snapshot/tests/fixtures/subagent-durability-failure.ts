@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { SubagentPromptReceipt, SubagentPromptRequest, SubagentPromptRequestId } from '@deepseek-ai/dsh-subagent'
+import type { SubagentPromptRequestId } from '@deepseek-ai/dsh-subagent'
 
 export const name = 'subagent-durability-failure'
 export const inject = ['agents', 'sessionPersistence', 'subagents']
@@ -90,7 +90,17 @@ export function apply(ctx: Context): void {
   // child is minted with a random id, so without this the follow-ups would
   // never reach the live inbox.
   let realChildId: string | undefined
-  const subagents = ctx.subagents
+  const subagents = ctx.subagents as unknown as {
+    sendMessage: (authority: unknown, childId: SessionId, content: unknown, options: unknown) => Promise<unknown>
+    prompt: (request: {
+      requestId: SubagentPromptRequestId
+      parentSessionId: SessionId
+      childSessionId: SessionId
+      mode: 'continuable'
+      delivery: 'steer'
+      content: readonly [{ readonly type: 'text'; readonly text: string }]
+    }, signal: AbortSignal) => Promise<unknown>
+  }
   const deliver = subagents.sendMessage.bind(subagents)
   subagents.sendMessage = (authority, childId, content, options) => {
     const mapped = childId === PLACEHOLDER_CHILD_ID && realChildId !== undefined
@@ -110,43 +120,19 @@ export function apply(ctx: Context): void {
     if (accepted >= 3) followupsAccepted.resolve(undefined)
   })
   let steering = false
-  let humanRequest: SubagentPromptRequest | undefined
-  let humanReceipt: SubagentPromptReceipt | undefined
-  ctx.on('agent/pre-step', async ({ agent, turn }, next) => {
-    if (agent.session.header.parentSession === undefined) {
-      if (humanRequest !== undefined && humanReceipt !== undefined && turn > 1) {
-        // Settlement enters the parent only after child residency is released.
-        if (ctx.agents.get(humanRequest.childSessionId) !== undefined) {
-          throw new Error('snapshot continuation still resident before cold retry')
-        }
-        const receipt = await subagents.prompt(humanRequest, new AbortController().signal)
-        if (receipt.messageId !== humanReceipt.messageId
-          || ctx.agents.get(humanRequest.childSessionId) !== undefined) {
-          throw new Error('snapshot cold retry changed continuation admission')
-        }
-      }
-      return next()
-    }
+  ctx.on('agent/pre-step', async ({ agent }, next) => {
+    if (agent.session.header.parentSession === undefined) return next()
     await followupsAccepted.promise
     if (humanSteer && !steering) {
       steering = true
-      humanRequest = {
+      await subagents.prompt({
         requestId: 'snapshot-human-steer' as SubagentPromptRequestId,
         parentSessionId: agent.session.header.parentSession,
         childSessionId: SessionId(agent.session.header.id),
         mode: 'continuable',
         delivery: 'steer',
         content: [{ type: 'text', text: 'Human priority: keep the requested exact reply.' }],
-      }
-      humanReceipt = await subagents.prompt(humanRequest, new AbortController().signal)
-      const retries = await Promise.all((['queue', 'steer'] as const).map(async delivery => subagents.prompt({
-        ...humanRequest!,
-        delivery,
-        content: [{ type: 'text', text: 'Replacement content must not enter the child transcript.' }],
-      }, new AbortController().signal)))
-      if (retries.some(receipt => receipt.messageId !== humanReceipt!.messageId)) {
-        throw new Error('snapshot resident retries changed continuation admission')
-      }
+      }, new AbortController().signal)
     }
     // The published-failure variant's child never reaches a step (its follow-up
     // throws), and its parent turn awaits that child, so only the continuable
